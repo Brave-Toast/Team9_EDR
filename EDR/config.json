@@ -1,0 +1,70 @@
+{
+    "agent": {
+        "id": "ubuntu-juiceshop-vm-01",
+        "log_level": "info",
+        "heartbeat_interval_seconds": 60
+    },
+    "platform": "linux",
+    "monitoring": {
+        "file_integrity": {
+            "enabled": true,
+            "paths": [
+                "/home/james/juice-shop",
+                "/etc/passwd",
+                "/etc/shadow",
+                "/etc/sudoers"
+            ]
+        },
+        "process_monitoring": {
+            "enabled": true,
+            "processes": [
+                {
+                    "name": "node",
+                    "command_line_contains": "/home/james/juice-shop/build/app.js"
+                }
+            ]
+        },
+        "network_monitoring": {
+            "enabled": true,
+            "listen_ports": [3000]
+        },
+        "juice_shop_monitoring": {
+            "enabled": true,
+            "log_directory": "/home/james/juice-shop/logs/",
+            "log_pattern": "access.log*",
+            "error_threshold": 10,
+            "error_time_window_minutes": 1
+        },
+        "ssh_monitoring": {
+            "enabled": true,
+            "log_path": "/var/log/auth.log",
+            "fail_threshold": 5,
+            "time_window_minutes": 5
+        },
+        "log_sources": [
+            "/var/log/auth.log",
+            "/var/log/syslog",
+            "/home/james/.npm/_logs/"
+        ]
+    },
+    "detection_rules": {
+        "suspicious_commands": [
+            "nc -l",
+            "ncat -l",
+            "whoami",
+            "id",
+            "uname -a",
+            "cat /etc/passwd"
+        ],
+        "web_attack_patterns": [
+            "SELECT.*FROM",
+            "<script>",
+            "../",
+            "etc/passwd"
+        ]
+    },
+    "output": {
+        "type": "file",
+        "filepath": "/var/log/edr_agent.log"
+    }
+}
