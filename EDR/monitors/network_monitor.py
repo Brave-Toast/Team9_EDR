@@ -1,62 +1,70 @@
 import psutil
 from .base_monitor import BaseMonitor
+from multiprocessing import Queue
+from multiprocessing.synchronize import Event
 
 class NetworkMonitor(BaseMonitor):
     def get_name(self):
         return "network_monitoring"
 
-    def __init__(self, agent_config, log_queue, shutdown_event):
-        super().__init__(agent_config, log_queue, shutdown_event)
-        self.reported_conns = set() # Track reported connections to avoid log spam
+    def __init__(self, agent_config: dict, log_queue: Queue, shutdown_event: Event, threat_bus: Queue, monitor_queue: Queue):
+        super().__init__(agent_config, log_queue, shutdown_event, threat_bus, monitor_queue)
+        self.reported_conns = set()
+        self.suspicious_pids = set()
+
+    def handle_threat_intel(self, message: dict):
+        """
+        Handles threat intelligence messages from the bus, subscribing to suspicious process events.
+        """
+        if message.get("event_type") == "SUSPICIOUS_PROCESS_DETECTED":
+            pid = message.get("data", {}).get("pid")
+            if pid:
+                self.log_alert(
+                    "THREAT_INTEL_UPDATE",
+                    f"Received threat intel: Process PID {pid} is suspicious. Now monitoring its network activity.",
+                    level="info",
+                    severity="low"
+                )
+                self.suspicious_pids.add(pid)
 
     def run(self):
         if not self.monitor_config.get("enabled"):
             return
 
-        listen_ports = set(self.monitor_config.get("listen_ports", []))
-        if not listen_ports:
-            return
-
-        current_conns = set()
+        # This monitor now focuses on correlating network activity with threat intel
         try:
+            # Check all established connections for correlation
             for conn in psutil.net_connections(kind='inet'):
-                if conn.status == 'LISTEN' and conn.laddr and conn.laddr.port in listen_ports:
-                    conn_id = (conn.laddr.port, conn.pid)
-                    current_conns.add(conn_id)
+                if conn.pid in self.suspicious_pids and conn.status == 'ESTABLISHED':
+                    # Create a unique ID for the connection to avoid duplicate alerts
+                    conn_id = (conn.pid, conn.laddr.ip, conn.laddr.port, conn.raddr.ip, conn.raddr.port)
+                    
+                    if conn_id not in self.reported_conns:
+                        proc_name = "unknown"
+                        try:
+                            proc_name = psutil.Process(conn.pid).name()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            # Process might have terminated or we may not have permission to access it
+                            pass
+
+                        self.log_alert(
+                            "CORRELATED_THREAT_DETECTED",
+                            f"Previously flagged suspicious process '{proc_name}' (PID {conn.pid}) established a network connection.",
+                            severity="high",
+                            details={
+                                "pid": conn.pid,
+                                "process_name": proc_name,
+                                "local_address": f"{conn.laddr.ip}:{conn.laddr.port}",
+                                "remote_address": f"{conn.raddr.ip}:{conn.raddr.port}",
+                                "status": conn.status
+                            }
+                        )
+                        self.reported_conns.add(conn_id)
+
         except psutil.AccessDenied:
             self.log_alert("ERROR", "Could not access network connections (permission denied).", "warning")
-            # To prevent spamming, disable this monitor after the first failure
-            self.monitor_config['enabled'] = False
+            self.monitor_config['enabled'] = False # Disable to prevent spamming logs
             return
-        except RuntimeError as e:
+        except psutil.Error as e:
             self.log_alert("ERROR", f"An error occurred while checking network connections: {e}", "error")
             return
-
-        # Find and report new connections
-        new_conns = current_conns - self.reported_conns
-        for port, pid in new_conns:
-            try:
-                proc_name = psutil.Process(pid).name() if pid else "N/A"
-                self.log_alert(
-                    "NETWORK-LISTEN-START",
-                    f"New process listening on monitored port: {port}. PID: {pid}, Name: {proc_name}",
-                    level="info"
-                )
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                self.log_alert(
-                    "NETWORK-LISTEN-START",
-                    f"New process with PID {pid} is listening on monitored port: {port}.",
-                    level="info"
-                )
-
-        # Find and report closed connections
-        closed_conns = self.reported_conns - current_conns
-        for port, pid in closed_conns:
-            self.log_alert(
-                "NETWORK-LISTEN-STOP",
-                f"A process has stopped listening on monitored port: {port}. It was running with PID: {pid}.",
-                level="info"
-            )
-
-        # Update the state for the next run
-        self.reported_conns = current_conns

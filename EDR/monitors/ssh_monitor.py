@@ -3,13 +3,15 @@ import re
 from datetime import datetime, timedelta
 from collections import defaultdict
 from .base_monitor import BaseMonitor
+from multiprocessing import Queue
+from multiprocessing.synchronize import Event
 
 class SSHMonitor(BaseMonitor):
     def get_name(self):
         return "ssh_monitoring"
 
-    def __init__(self, agent_config, log_queue, shutdown_event):
-        super().__init__(agent_config, log_queue, shutdown_event)
+    def __init__(self, agent_config: dict, log_queue: Queue, shutdown_event: Event, threat_bus: Queue, monitor_queue: Queue):
+        super().__init__(agent_config, log_queue, shutdown_event, threat_bus, monitor_queue)
         self.fail_tracker = defaultdict(list)
         self.log_inode = None
         self.log_pos = 0

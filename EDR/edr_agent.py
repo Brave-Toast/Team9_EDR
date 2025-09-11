@@ -7,9 +7,11 @@ import pkgutil
 import importlib
 import inspect
 import sys
+import re
 import queue
 import subprocess
 from multiprocessing import Process, Queue, Event
+from multiprocessing.synchronize import Event as EventType
 
 # Add the project root to the Python path to help with module resolution
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +49,37 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_object)
 
 # ==============================================================================
+# THREAT INTELLIGENCE BUS
+# ==============================================================================
+
+class ThreatBusDispatcher:
+    """
+    A central dispatcher that forwards messages from a central bus to all
+    subscribed monitors, creating a publish-subscribe communication channel.
+    """
+    def __init__(self, bus_queue: Queue, monitor_queues: dict, shutdown_event: EventType):
+        self.bus_queue = bus_queue
+        self.monitor_queues = monitor_queues
+        self.shutdown_event = shutdown_event
+
+    def run(self):
+        """Continuously reads from the bus and dispatches to all monitors."""
+        while not self.shutdown_event.is_set():
+            try:
+                message = self.bus_queue.get(timeout=1)
+                for monitor_name, queue_ in self.monitor_queues.items():
+                    try:
+                        # Avoid sending a message back to the sender
+                        if message.get("publisher") != monitor_name:
+                            queue_.put_nowait(message)
+                    except queue.Full:
+                        # In a real-world scenario, you'd want to log this
+                        # or have a strategy for handling slow consumers.
+                        pass
+            except queue.Empty:
+                continue
+
+# ==============================================================================
 # EDR AGENT CORE
 # ==============================================================================
 
@@ -59,8 +92,13 @@ class EDRAgent:
         self.config = config
         self.logger = self._setup_logging()
         self.log_queue = Queue()
-        self.processes = []
         self.shutdown_event = Event()
+        self.processes = []
+        
+        # Queues for the Threat Intelligence Bus
+        self.threat_bus_queue = Queue()
+        self.monitor_input_queues = {}
+
         self.action_dispatcher = {
             "kill_process": self._handle_kill_process,
             "block_ip": self._handle_block_ip,
@@ -74,20 +112,12 @@ class EDRAgent:
         log_level = self.config.get("agent", {}).get("log_level", "INFO").upper()
         logger.setLevel(log_level)
 
-        # Prevent duplicate handlers
         if logger.hasHandlers():
             logger.handlers.clear()
 
-        # Create a handler that writes to standard output (the console)
         handler = logging.StreamHandler(sys.stdout)
-        
-        # Instantiate our custom JSON formatter
         formatter = JsonFormatter()
-        
-        # Set the formatter for the handler
         handler.setFormatter(formatter)
-        
-        # Add the handler to the logger
         logger.addHandler(handler)
 
         return logger
@@ -97,25 +127,50 @@ class EDRAgent:
         self.logger.info("Loading and starting monitor processes...")
         monitors_package_path = "monitors"
         
+        # 1. Discover all monitor classes and create their input queues
+        monitor_classes = []
         for _, module_name, _ in pkgutil.iter_modules([monitors_package_path]):
             if module_name == 'base_monitor':
                 continue
             try:
                 module = importlib.import_module(f"{monitors_package_path}.{module_name}")
-                for name, obj in inspect.getmembers(module, inspect.isclass):
+                for _, obj in inspect.getmembers(module, inspect.isclass):
                     if issubclass(obj, BaseMonitor) and obj is not BaseMonitor:
-                        # Instantiate the monitor, giving it the config, queue, and shutdown event
-                        monitor_instance = obj(self.config, self.log_queue, self.shutdown_event)
-                        
-                        # Create a new process targeting the monitor's run_wrapper method
-                        proc = Process(target=monitor_instance.run_wrapper, daemon=True)
-                        self.processes.append(proc)
-                        proc.start()
-                        self.logger.info("  -> Started process for monitor: %s", name)
+                        monitor_classes.append(obj)
+                        # Each monitor gets its own input queue for bus messages
+                        self.monitor_input_queues[obj.__name__] = Queue()
             except (ImportError, AttributeError, TypeError) as e:
-                self.logger.error("Failed to load and start monitor plugin '%s': %s", module_name, e)
+                self.logger.error("Failed to load monitor plugin '%s': %s", module_name, e)
+
+        # 2. Start the Threat Bus Dispatcher process
+        bus_dispatcher = ThreatBusDispatcher(
+            self.threat_bus_queue, self.monitor_input_queues, self.shutdown_event
+        )
+        bus_proc = Process(target=bus_dispatcher.run, daemon=True)
+        self.processes.append(bus_proc)
+        bus_proc.start()
+        self.logger.info("  -> Started process for ThreatBusDispatcher")
+
+        # 3. Start each monitor process
+        for monitor_class in monitor_classes:
+            try:
+                monitor_instance = monitor_class(
+                    agent_config=self.config, 
+                    log_queue=self.log_queue, 
+                    shutdown_event=self.shutdown_event,
+                    threat_bus=self.threat_bus_queue,
+                    monitor_queue=self.monitor_input_queues[monitor_class.__name__]
+                )
+                
+                proc = Process(target=monitor_instance.run_wrapper, daemon=True)
+                self.processes.append(proc)
+                proc.start()
+                self.logger.info("  -> Started process for monitor: %s", monitor_class.__name__)
+            except (TypeError, KeyError, ValueError, AttributeError, OSError, re.error) as e:
+                self.logger.error("Failed to start monitor '%s': %s", monitor_class.__name__, e)
         
         self.logger.info("All monitor processes have been started.")
+
 
     def _process_log_queue(self):
         """
@@ -125,12 +180,10 @@ class EDRAgent:
             while not self.log_queue.empty():
                 log_record = self.log_queue.get_nowait()
                 
-                # --- Part 1: Always log the event ---
                 log_level_name = log_record.get("level", "info")
                 log_func = getattr(self.logger, log_level_name, self.logger.info)
                 log_func(log_record)
 
-                # --- Part 2: Dispatch active response if needed ---
                 if log_record.get("action"):
                     self._dispatch_response(log_record)
 
@@ -163,7 +216,7 @@ class EDRAgent:
         try:
             import psutil
             p = psutil.Process(pid)
-            p.terminate()  # or p.kill() for a more forceful stop
+            p.terminate()
             self.logger.info("Successfully terminated process with PID %d.", pid)
         except ImportError:
             self.logger.error("The 'psutil' library is required for 'kill_process'. Please install it.")
@@ -183,7 +236,6 @@ class EDRAgent:
             self.logger.error("Invalid or missing source_ip for block_ip action in alert: %s", alert)
             return
 
-        # Validate the IP address format
         try:
             import ipaddress
             ipaddress.ip_address(ip)
@@ -194,8 +246,6 @@ class EDRAgent:
             return
 
         try:
-            # This command is for UFW (Uncomplicated Firewall) on Ubuntu
-            # WARNING: This requires the agent to have passwordless sudo permissions for ufw.
             cmd = ["sudo", "ufw", "insert", "1", "deny", "from", ip]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             self.logger.info("Successfully blocked IP %s. UFW output: %s", ip, result.stdout)
@@ -215,27 +265,22 @@ class EDRAgent:
         try:
             while True:
                 self._process_log_queue()
-                # Check if any processes have died unexpectedly
                 for proc in self.processes:
                     if not proc.is_alive():
                         self.logger.error("A monitor process has terminated unexpectedly. PID: %s. Check logs for details.", proc.pid)
-                        # In a real-world scenario, you might want to restart the process here.
-                        # For now, we'll just log it.
-                time.sleep(1) # The main loop can sleep for short intervals
+                time.sleep(1)
         except KeyboardInterrupt:
             self.logger.info("Shutdown signal received.")
         finally:
             self.logger.info("Signaling all monitor processes to shut down...")
-            self.shutdown_event.set() # <-- This is the new graceful shutdown signal
+            self.shutdown_event.set()
 
             for proc in self.processes:
-                proc.join(timeout=10) # Wait for each process to finish
+                proc.join(timeout=10)
                 if proc.is_alive():
-                    # If a process is stuck, terminate it forcefully
                     self.logger.warning("Process %s did not shut down gracefully, terminating.", proc.pid)
                     proc.terminate()
 
-            # Process any final logs
             self._process_log_queue()
             self.logger.info("EDR Agent stopped.")
 
@@ -247,7 +292,6 @@ if __name__ == "__main__":
     CONFIG = {}
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            # Remove comments from JSON before parsing
             content = "".join(line for line in f if not line.strip().startswith("//"))
             CONFIG = json.loads(content)
     except FileNotFoundError:

@@ -1,13 +1,15 @@
 import psutil
 import re
 from .base_monitor import BaseMonitor
+from multiprocessing import Queue
+from multiprocessing.synchronize import Event
 
 class ProcessMonitor(BaseMonitor):
     def get_name(self):
         return "process_monitoring"
 
-    def __init__(self, agent_config, logger, shutdown_event):
-        super().__init__(agent_config, logger, shutdown_event)
+    def __init__(self, agent_config: dict, log_queue: Queue, shutdown_event: Event, threat_bus: Queue, monitor_queue: Queue):
+        super().__init__(agent_config, log_queue, shutdown_event, threat_bus, monitor_queue)
         self.known_pids = set()
         self.monitored_procs = {} # Tracks PIDs of specifically monitored processes
         rules = self.config.get("detection_rules", {})
@@ -32,23 +34,29 @@ class ProcessMonitor(BaseMonitor):
                 
                 # Example of a CRITICAL alert with an ACTION
                 if "ncat" in cmdline and "-e /bin/bash" in cmdline:
+                    details = {"pid": proc.pid, "cmdline": cmdline, "name": proc.name()}
                     self.log_alert(
                         "REVERSE-SHELL",
                         f"Potential reverse shell detected! PID: {proc.pid}, CMD: '{cmdline}'",
                         level="critical",
                         severity="critical",
-                        details={"pid": proc.pid, "cmdline": cmdline},
+                        details=details,
                         action="kill_process" # <-- Request an active response
                     )
+                    # Publish this critical event to the bus
+                    self.publish_threat_intel("SUSPICIOUS_PROCESS_DETECTED", data=details)
                     continue # Move to next process after this critical alert
 
                 for pattern in self.suspicious_command_patterns:
                     if pattern.search(cmdline):
+                        details = {"pid": proc.pid, "cmdline": cmdline, "name": proc.name(), "pattern": pattern.pattern}
                         self.log_alert(
                             "PROCESS",
                             f"Suspicious command in new process. PID: {proc.pid}, "
                             f"Name: {proc.name()}, CMD: '{cmdline}'"
                         )
+                        # Publish this event to the bus
+                        self.publish_threat_intel("SUSPICIOUS_PROCESS_DETECTED", data=details)
                         break
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
