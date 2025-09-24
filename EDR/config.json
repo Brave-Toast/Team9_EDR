@@ -26,7 +26,10 @@
         },
         "network_monitoring": {
             "enabled": true,
-            "listen_ports": [3000]
+            "network_interface": "ens33",
+            "syn_flood_threshold": 30,
+            "time_window_seconds": 10,
+            "port_scan_threshold": 15
         },
         "juice_shop_monitoring": {
             "enabled": true,
@@ -44,7 +47,9 @@
         "log_sources": [
             "/var/log/auth.log",
             "/var/log/syslog",
-            "/home/james/.npm/_logs/"
+            "/home/james/.npm/_logs/",
+            "/var/log/apache2/access.log",
+            "/var/log/apache2/error.log"
         ]
     },
     "detection_rules": {
@@ -65,6 +70,7 @@
     },
     "output": {
         "type": "file",
-        "filepath": "/var/log/edr_agent.log"
+        "filepath": "/home/james/MyLogs/",
+        "format": "human"
     }
 }

@@ -11,7 +11,7 @@ This repository contains a modular, multi-process Endpoint Detection and Respons
 *   **Centralized Logging:** All monitors send their logs to a central queue, which are then processed by the main agent. Logs are formatted as JSON for easy parsing and analysis.
 *   **Threat Intelligence Bus:** A central message bus allows monitors to share information and threat intelligence with each other.
 *   **Active Response:** The EDR can be configured to take active responses to certain threats, such as killing a process or blocking an IP address.
-*   **Dynamic Configuration:** The agent's behavior is controlled by a central configuration file (`config.json`), which can be modified without restarting the agent.
+*   **Configuration Driven:** The agent's behavior is controlled by a central `config.json` file. The configuration is loaded at startup.
 
 ## How it works
 
@@ -43,7 +43,7 @@ The EDR comes with the following monitors:
 
 *   **File Monitor:** Monitors the file system for changes, such as file creation, deletion, and modification. It can also scan file content for suspicious patterns.
 *   **Juice Shop Monitor:** Monitors the logs of an OWASP Juice Shop application for signs of web attacks and error spikes.
-*   **Network Monitor:** Monitors network connections and can correlate network activity with threat intelligence from other monitors.
+*   **Network Monitor:** Actively sniffs network traffic using `scapy` to detect threats like SYN floods and port scans in real-time. It can also correlate network activity with threat intelligence from other monitors.
 *   **Process Monitor:** Monitors running processes for suspicious commands and can perform health checks on specifically monitored processes.
 *   **SSH Monitor:** Monitors the SSH authentication log for brute-force attacks.
 
@@ -55,13 +55,13 @@ The EDR agent is configured using the `config.json` file. This file is divided i
 *   **platform:** The platform the agent is running on (e.g., "linux").
 *   **monitoring:** This section contains the configuration for each monitor. Each monitor has its own subsection, which must be named after the monitor's `get_name()` method.
 *   **detection_rules:** This section contains detection rules, such as suspicious command patterns and web attack patterns.
-*   **output:** This section is not currently used, but could be used to configure the output of the EDR agent (e.g., sending alerts to a SIEM).
+*   **output:** Configures the logging output. Can be set to log to the console and/or a file, and the format can be set to human-readable or structured JSON (ECS).
 
 ## Extending the EDR
 
 To create a new monitor, you need to create a new Python file in the `monitors` directory and define a new class that inherits from `BaseMonitor`. The new class must implement the `get_name` and `run` methods.
 
 *   **`get_name()`:** This method should return a unique name for the monitor, which should match the key in the `config.json` "monitoring" section.
-*   **`run()`:** This method contains the main execution logic for the monitor. It will be called in a loop by the `BaseMonitor`'s `run_wrapper` method.
+*   **`run()`:** This method contains the main execution logic for the monitor. It is called **once** by the `BaseMonitor`'s `run_wrapper`. If the monitor needs to perform continuous polling, it must implement its own loop within this method (e.g., `while not self.shutdown_event.is_set(): ...`).
 
 Once you have created your new monitor, you can enable it and configure it in the `config.json` file. The EDR agent will automatically discover and load the new monitor when it starts.

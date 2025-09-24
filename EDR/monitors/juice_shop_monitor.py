@@ -9,7 +9,7 @@ from fnmatch import fnmatch
 from datetime import datetime, timedelta
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from .base_monitor import BaseMonitor
+from monitors.base_monitor import BaseMonitor
 from multiprocessing import Queue
 from multiprocessing.synchronize import Event
 

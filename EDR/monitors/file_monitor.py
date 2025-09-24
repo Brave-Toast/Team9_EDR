@@ -2,7 +2,7 @@ import os
 import re
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from .base_monitor import BaseMonitor
+from monitors.base_monitor import BaseMonitor
 from multiprocessing import Queue
 from multiprocessing.synchronize import Event
 
@@ -50,7 +50,11 @@ class FileMonitor(BaseMonitor):
             self.log_alert("LIFECYCLE", "Monitor stopped.", "info")
 
     def run(self):
-        """The file monitor runs in a background thread, so this method does nothing in the main loop."""
+        """
+        The file monitor's work is done in a background thread (Observer).
+        This main thread will simply wait for the shutdown event to keep the process alive.
+        """
+        self.shutdown_event.wait()
 
 
 

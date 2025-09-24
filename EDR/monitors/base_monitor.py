@@ -1,4 +1,4 @@
-import time
+# base_monitor.py
 import os
 import socket
 import psutil
@@ -94,21 +94,21 @@ class BaseMonitor:
             pass
 
     def run_wrapper(self):
-        """The main execution loop for the monitor process."""
+        """The main execution loop for the monitor process.""" 
         self.log_alert("LIFECYCLE", f"Process for monitor '{self.get_name()}' started.", "info")
         
         self.start()
 
         try:
-            while not self.shutdown_event.is_set():
-                # Check for incoming threat intel messages
-                self._check_for_intel()
+            if self.monitor_config.get("enabled", False):
+                self.run()
+            else:
+                # If the monitor is not enabled, just wait for the shutdown event.
+                self.shutdown_event.wait()
 
-                if self.monitor_config.get("enabled", False):
-                    self.run()
-                
-                # Use a timeout on sleep to be more responsive
-                time.sleep(self.interval)
+        except KeyboardInterrupt:
+            # This allows the process to receive a Ctrl+C and shut down gracefully.
+            pass
         finally:
             self.stop()
             self.log_alert("LIFECYCLE", f"Process for monitor '{self.get_name()}' stopping.", "info")
