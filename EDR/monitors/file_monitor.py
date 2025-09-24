@@ -2,14 +2,16 @@ import os
 import re
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from .base_monitor import BaseMonitor
+from monitors.base_monitor import BaseMonitor
+from multiprocessing import Queue
+from multiprocessing.synchronize import Event
 
 class FileMonitor(BaseMonitor):
     def get_name(self):
         return "file_integrity"
 
-    def __init__(self, agent_config, log_queue, shutdown_event):
-        super().__init__(agent_config, log_queue, shutdown_event)
+    def __init__(self, agent_config: dict, log_queue: Queue, shutdown_event: Event, threat_bus: Queue, monitor_queue: Queue):
+        super().__init__(agent_config, log_queue, shutdown_event, threat_bus, monitor_queue)
         self.observer = None
         rules = self.config.get("detection_rules", {})
         self.web_attack_patterns = [
@@ -48,7 +50,12 @@ class FileMonitor(BaseMonitor):
             self.log_alert("LIFECYCLE", "Monitor stopped.", "info")
 
     def run(self):
-        """The file monitor runs in a background thread, so this method does nothing in the main loop."""
+        """
+        The file monitor's work is done in a background thread (Observer).
+        This main thread will simply wait for the shutdown event to keep the process alive.
+        """
+        self.shutdown_event.wait()
+
 
 
 class _FileChangeHandler(FileSystemEventHandler):

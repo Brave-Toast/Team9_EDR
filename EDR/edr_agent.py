@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Main entry point for the EDR agent.
+
+This script initializes the EDR agent, loads the configuration, and starts all
+the monitoring components. It is responsible for orchestrating the different
+parts of the EDR and managing their lifecycle.
+"""
 import time
 import os
 import logging
@@ -7,9 +14,12 @@ import pkgutil
 import importlib
 import inspect
 import sys
+import re
 import queue
 import subprocess
 from multiprocessing import Process, Queue, Event
+from multiprocessing.synchronize import Event as EventType
+from datetime import datetime
 
 # Add the project root to the Python path to help with module resolution
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,33 +29,149 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from monitors.base_monitor import BaseMonitor
 
 # ==============================================================================
-# CUSTOM JSON FORMATTER
+#  JSON LOG FORMATTER
 # ==============================================================================
 
-class JsonFormatter(logging.Formatter):
+class ECSFormatter(logging.Formatter):
     """
-    Formats log records as a single line of JSON.
+    Formats log records as a single line of JSON, conforming to the
+    Elastic Common Schema (ECS).
     """
+    def format(self, record):
+        # Start with the base ECS structure
+        ecs_log = {
+            "@timestamp": datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+            "log": {"level": record.levelname.lower(), "logger": record.name},
+            "message": record.getMessage(),
+            "ecs": {"version": "8.4"}, # Specify ECS version
+        }
+
+        # If the original log message was a dictionary, map its fields to ECS
+        if isinstance(record.msg, dict):
+            original_msg = record.msg
+            ecs_log["message"] = original_msg.get("message", ecs_log["message"])
+
+            # Event fields
+            event = {}
+            if original_msg.get("event_type"):
+                event["kind"] = "alert"
+                event["category"] = "security"
+                event["type"] = original_msg.get("event_type").lower()
+            if original_msg.get("monitor"):
+                event["module"] = original_msg.get("monitor").lower()
+            if original_msg.get("action"):
+                event["action"] = original_msg.get("action")
+            if original_msg.get("severity"):
+                # ECS severity is a number, but we can use a keyword too
+                event["severity"] = original_msg.get("severity")
+            if event:
+                ecs_log["event"] = event
+
+            # Map context fields (host, process, user)
+            if original_msg.get("host"):
+                ecs_log["host"] = original_msg.get("host")
+            if original_msg.get("process"):
+                ecs_log["process"] = original_msg.get("process")
+            if original_msg.get("user"):
+                ecs_log["user"] = original_msg.get("user")
+
+            # Place all other details under a custom field to avoid conflicts
+            if original_msg.get("details"):
+                ecs_log["custom"] = {"details": original_msg.get("details")}
+
+        return json.dumps(ecs_log)
+
+class HumanReadableFormatter(logging.Formatter):
+    """
+    Formats log records for easy reading in a terminal with color.
+    """
+
+    COLORS = {
+        "INFO": "\x1b[34m",     # Blue
+        "WARNING": "\x1b[33m",  # Yellow
+        "ERROR": "\x1b[31m",    # Red
+        "CRITICAL": "\x1b[41m\x1b[37m", # White text on Red background
+        "RESET": "\x1b[0m"
+    }
+
     def format(self, record):
         log_object = {}
         if isinstance(record.msg, dict):
-            # If the message is a dictionary, use it as the base.
             log_object.update(record.msg)
-            # Ensure a 'message' field exists for consistency. If the original
-            # dict didn't have one, we create one from its string representation.
             if 'message' not in log_object:
                 log_object['message'] = str(record.msg)
         else:
-            # If the message is a string, get the fully formatted version.
-            log_object = {'message': record.getMessage()}
+            log_object['message'] = record.getMessage()
 
-        # Add standard logging fields, overwriting if necessary for consistency.
-        log_object['timestamp'] = self.formatTime(record, self.datefmt) 
-        log_object['logger'] = record.name
-        if record.exc_info:
-            log_object['exc_info'] = self.formatException(record.exc_info)
-        return json.dumps(log_object)
+        level_name = record.levelname
+        color = self.COLORS.get(level_name, self.COLORS["RESET"])
+        
+        event_type = log_object.get("event_type", "LOG")
+        title = f"[{level_name}] {event_type}"
+        
+        output = []
+        output.append(f"{color}{'=' * 70}{self.COLORS['RESET']}")
+        output.append(f"{color}{title.center(70)}{self.COLORS['RESET']}")
+        output.append(f"{color}{'=' * 70}{self.COLORS['RESET']}")
 
+        output.append(f"Timestamp: {datetime.fromtimestamp(record.created).strftime('%Y-%m-%d %H:%M:%S')}")
+        output.append(f"Monitor:   {log_object.get('monitor', 'N/A')}")
+        output.append(f"Message:   {log_object.get('message', 'N/A')}")
+        
+        if log_object.get("severity"):
+            output.append(f"Severity:  {log_object.get('severity')}")
+        if log_object.get("action"):
+            output.append(f"Action:    {log_object.get('action')}")
+
+        details = log_object.get("details")
+        if details and isinstance(details, dict):
+            output.append("Details:")
+            for key, value in details.items():
+                output.append(f"  -> {key:<12}: {value}")
+        
+        output.append("\n")
+
+        return "\n".join(output)
+
+# ==============================================================================
+# THREAT INTELLIGENCE BUS
+# ==============================================================================
+
+class ThreatBusDispatcher:
+    """
+    A central dispatcher that forwards messages from a central bus to all
+    subscribed monitors, creating a publish-subscribe communication channel.
+    """
+    def __init__(self, bus_queue: Queue, monitor_queues: dict, shutdown_event: EventType):
+        self.bus_queue = bus_queue
+        self.monitor_queues = monitor_queues
+        self.shutdown_event = shutdown_event
+
+    def run(self):
+        """Continuously reads from the bus and dispatches to all monitors."""
+        while not self.shutdown_event.is_set():
+            try:
+                message = self.bus_queue.get(timeout=1)
+                for monitor_name, queue_ in self.monitor_queues.items():
+                    try:
+                        # Avoid sending a message back to the sender
+                        if message.get("publisher") != monitor_name:
+                            queue_.put_nowait(message)
+                    except queue.Full:
+                        # In a real-world scenario, you'd want to log this
+                        # or have a strategy for handling slow consumers.
+                        pass
+            except queue.Empty:
+                continue
+
+def run_bus_dispatcher_wrapper(dispatcher: ThreatBusDispatcher):
+    """A wrapper to allow the dispatcher process to handle KeyboardInterrupt gracefully."""
+    try:
+        dispatcher.run()
+    except KeyboardInterrupt:
+        # On Ctrl+C, the shutdown_event will be set by the main agent,
+        # and the run loop will terminate, allowing a clean exit.
+        pass
 # ==============================================================================
 # EDR AGENT CORE
 # ==============================================================================
@@ -59,8 +185,13 @@ class EDRAgent:
         self.config = config
         self.logger = self._setup_logging()
         self.log_queue = Queue()
-        self.processes = []
         self.shutdown_event = Event()
+        self.processes = []
+        
+        # Queues for the Threat Intelligence Bus
+        self.threat_bus_queue = Queue()
+        self.monitor_input_queues = {}
+
         self.action_dispatcher = {
             "kill_process": self._handle_kill_process,
             "block_ip": self._handle_block_ip,
@@ -68,27 +199,49 @@ class EDRAgent:
 
     def _setup_logging(self):
         """
-        Configures the logger to output JSON to standard output.
+        Configures the logger based on the output format specified in the config.
         """
         logger = logging.getLogger("EDRAgent")
         log_level = self.config.get("agent", {}).get("log_level", "INFO").upper()
         logger.setLevel(log_level)
 
-        # Prevent duplicate handlers
         if logger.hasHandlers():
             logger.handlers.clear()
 
-        # Create a handler that writes to standard output (the console)
-        handler = logging.StreamHandler(sys.stdout)
-        
-        # Instantiate our custom JSON formatter
-        formatter = JsonFormatter()
-        
-        # Set the formatter for the handler
-        handler.setFormatter(formatter)
-        
-        # Add the handler to the logger
-        logger.addHandler(handler)
+        output_config = self.config.get("output", {})
+        output_type = output_config.get("type", "console")
+        output_format = output_config.get("format", "json")
+
+        # 1. Always set up the console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        if output_format.lower() == "human":
+            console_formatter = HumanReadableFormatter()
+        else:
+            console_formatter = ECSFormatter()
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
+        # 2. If file output is enabled, add a file handler as well
+        if output_type.lower() == "file":
+            filepath = output_config.get("filepath")
+            if not filepath:
+                logger.error("Log output type is 'file' but no 'filepath' is specified. Defaulting to console.")
+            else:
+                try:
+                    # If the path is a directory, append a default filename
+                    if os.path.isdir(filepath):
+                        filepath = os.path.join(filepath, "edr_agent.log")
+
+                    # Ensure the directory exists
+                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+                    # File logs should always be JSON for machine readability
+                    file_handler = logging.FileHandler(filepath)
+                    file_handler.setFormatter(ECSFormatter())
+                    logger.addHandler(file_handler)
+
+                except (OSError, PermissionError) as e:
+                    logger.error("Failed to create log file at '%s': %s. Skipping file logging.", filepath, e)
 
         return logger
 
@@ -97,25 +250,50 @@ class EDRAgent:
         self.logger.info("Loading and starting monitor processes...")
         monitors_package_path = "monitors"
         
+        # 1. Discover all monitor classes and create their input queues
+        monitor_classes = []
         for _, module_name, _ in pkgutil.iter_modules([monitors_package_path]):
             if module_name == 'base_monitor':
                 continue
             try:
                 module = importlib.import_module(f"{monitors_package_path}.{module_name}")
-                for name, obj in inspect.getmembers(module, inspect.isclass):
+                for _, obj in inspect.getmembers(module, inspect.isclass):
                     if issubclass(obj, BaseMonitor) and obj is not BaseMonitor:
-                        # Instantiate the monitor, giving it the config, queue, and shutdown event
-                        monitor_instance = obj(self.config, self.log_queue, self.shutdown_event)
-                        
-                        # Create a new process targeting the monitor's run_wrapper method
-                        proc = Process(target=monitor_instance.run_wrapper, daemon=True)
-                        self.processes.append(proc)
-                        proc.start()
-                        self.logger.info("  -> Started process for monitor: %s", name)
+                        monitor_classes.append(obj)
+                        # Each monitor gets its own input queue for bus messages
+                        self.monitor_input_queues[obj.__name__] = Queue()
             except (ImportError, AttributeError, TypeError) as e:
-                self.logger.error("Failed to load and start monitor plugin '%s': %s", module_name, e)
+                self.logger.error("Failed to load monitor plugin '%s': %s", module_name, e)
+
+        # 2. Start the Threat Bus Dispatcher process
+        bus_dispatcher = ThreatBusDispatcher(
+            self.threat_bus_queue, self.monitor_input_queues, self.shutdown_event
+        )
+        bus_proc = Process(target=run_bus_dispatcher_wrapper, args=(bus_dispatcher,), daemon=True)
+        self.processes.append(bus_proc)
+        bus_proc.start()
+        self.logger.info("  -> Started process for ThreatBusDispatcher")
+
+        # 3. Start each monitor process
+        for monitor_class in monitor_classes:
+            try:
+                monitor_instance = monitor_class(
+                    agent_config=self.config, 
+                    log_queue=self.log_queue, 
+                    shutdown_event=self.shutdown_event,
+                    threat_bus=self.threat_bus_queue,
+                    monitor_queue=self.monitor_input_queues[monitor_class.__name__]
+                )
+                
+                proc = Process(target=monitor_instance.run_wrapper, daemon=True)
+                self.processes.append(proc)
+                proc.start()
+                self.logger.info("  -> Started process for monitor: %s", monitor_class.__name__)
+            except (TypeError, KeyError, ValueError, AttributeError, OSError, re.error) as e:
+                self.logger.error("Failed to start monitor '%s': %s", monitor_class.__name__, e)
         
         self.logger.info("All monitor processes have been started.")
+
 
     def _process_log_queue(self):
         """
@@ -125,12 +303,10 @@ class EDRAgent:
             while not self.log_queue.empty():
                 log_record = self.log_queue.get_nowait()
                 
-                # --- Part 1: Always log the event ---
                 log_level_name = log_record.get("level", "info")
                 log_func = getattr(self.logger, log_level_name, self.logger.info)
                 log_func(log_record)
 
-                # --- Part 2: Dispatch active response if needed ---
                 if log_record.get("action"):
                     self._dispatch_response(log_record)
 
@@ -163,7 +339,7 @@ class EDRAgent:
         try:
             import psutil
             p = psutil.Process(pid)
-            p.terminate()  # or p.kill() for a more forceful stop
+            p.terminate()
             self.logger.info("Successfully terminated process with PID %d.", pid)
         except ImportError:
             self.logger.error("The 'psutil' library is required for 'kill_process'. Please install it.")
@@ -177,13 +353,12 @@ class EDRAgent:
     def _handle_block_ip(self, alert: dict) -> None:
         """Handles the 'block_ip' action."""
         details = alert.get("details", {})
-        ip = details.get("source_ip")
+        ip = details.get("remote_address")
 
         if not ip or not isinstance(ip, str):
-            self.logger.error("Invalid or missing source_ip for block_ip action in alert: %s", alert)
+            self.logger.error("Invalid or missing 'remote_address' for block_ip action in alert: %s", alert)
             return
 
-        # Validate the IP address format
         try:
             import ipaddress
             ipaddress.ip_address(ip)
@@ -194,8 +369,6 @@ class EDRAgent:
             return
 
         try:
-            # This command is for UFW (Uncomplicated Firewall) on Ubuntu
-            # WARNING: This requires the agent to have passwordless sudo permissions for ufw.
             cmd = ["sudo", "ufw", "insert", "1", "deny", "from", ip]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             self.logger.info("Successfully blocked IP %s. UFW output: %s", ip, result.stdout)
@@ -215,27 +388,22 @@ class EDRAgent:
         try:
             while True:
                 self._process_log_queue()
-                # Check if any processes have died unexpectedly
                 for proc in self.processes:
                     if not proc.is_alive():
                         self.logger.error("A monitor process has terminated unexpectedly. PID: %s. Check logs for details.", proc.pid)
-                        # In a real-world scenario, you might want to restart the process here.
-                        # For now, we'll just log it.
-                time.sleep(1) # The main loop can sleep for short intervals
+                time.sleep(1)
         except KeyboardInterrupt:
             self.logger.info("Shutdown signal received.")
         finally:
             self.logger.info("Signaling all monitor processes to shut down...")
-            self.shutdown_event.set() # <-- This is the new graceful shutdown signal
+            self.shutdown_event.set()
 
             for proc in self.processes:
-                proc.join(timeout=10) # Wait for each process to finish
+                proc.join(timeout=10)
                 if proc.is_alive():
-                    # If a process is stuck, terminate it forcefully
                     self.logger.warning("Process %s did not shut down gracefully, terminating.", proc.pid)
                     proc.terminate()
 
-            # Process any final logs
             self._process_log_queue()
             self.logger.info("EDR Agent stopped.")
 
@@ -247,7 +415,6 @@ if __name__ == "__main__":
     CONFIG = {}
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            # Remove comments from JSON before parsing
             content = "".join(line for line in f if not line.strip().startswith("//"))
             CONFIG = json.loads(content)
     except FileNotFoundError:

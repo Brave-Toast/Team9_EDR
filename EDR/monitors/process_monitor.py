@@ -1,13 +1,15 @@
 import psutil
 import re
-from .base_monitor import BaseMonitor
+from monitors.base_monitor import BaseMonitor
+from multiprocessing import Queue
+from multiprocessing.synchronize import Event
 
 class ProcessMonitor(BaseMonitor):
     def get_name(self):
         return "process_monitoring"
 
-    def __init__(self, agent_config, logger, shutdown_event):
-        super().__init__(agent_config, logger, shutdown_event)
+    def __init__(self, agent_config: dict, log_queue: Queue, shutdown_event: Event, threat_bus: Queue, monitor_queue: Queue):
+        super().__init__(agent_config, log_queue, shutdown_event, threat_bus, monitor_queue)
         self.known_pids = set()
         self.monitored_procs = {} # Tracks PIDs of specifically monitored processes
         rules = self.config.get("detection_rules", {})
@@ -19,44 +21,60 @@ class ProcessMonitor(BaseMonitor):
         if not self.monitor_config.get("enabled"):
             return
 
-        current_pids = set(psutil.pids())
-        new_pids = current_pids - self.known_pids
+        # Initialize known_pids on the first run
+        self.known_pids = set(psutil.pids())
 
-        # Scan NEW processes for generic suspicious commands
-        for pid in new_pids:
-            try:
-                proc = psutil.Process(pid)
-                cmdline = " ".join(proc.cmdline() or [])
-                if not cmdline:
-                    continue
-                
-                # Example of a CRITICAL alert with an ACTION
-                if "ncat" in cmdline and "-e /bin/bash" in cmdline:
-                    self.log_alert(
-                        "REVERSE-SHELL",
-                        f"Potential reverse shell detected! PID: {proc.pid}, CMD: '{cmdline}'",
-                        level="critical",
-                        severity="critical",
-                        details={"pid": proc.pid, "cmdline": cmdline},
-                        action="kill_process" # <-- Request an active response
-                    )
-                    continue # Move to next process after this critical alert
+        while not self.shutdown_event.is_set():
+            # Check for incoming threat intel messages at the start of each cycle
+            self._check_for_intel()
 
-                for pattern in self.suspicious_command_patterns:
-                    if pattern.search(cmdline):
+            current_pids = set(psutil.pids())
+            new_pids = current_pids - self.known_pids
+
+            # Scan NEW processes for generic suspicious commands
+            for pid in new_pids:
+                try:
+                    proc = psutil.Process(pid)
+                    cmdline = " ".join(proc.cmdline() or [])
+                    if not cmdline:
+                        continue
+                    
+                    # Example of a CRITICAL alert with an ACTION
+                    if "ncat" in cmdline and "-e /bin/bash" in cmdline:
+                        details = {"pid": proc.pid, "cmdline": cmdline, "name": proc.name()}
                         self.log_alert(
-                            "PROCESS",
-                            f"Suspicious command in new process. PID: {proc.pid}, "
-                            f"Name: {proc.name()}, CMD: '{cmdline}'"
+                            "REVERSE-SHELL",
+                            f"Potential reverse shell detected! PID: {proc.pid}, CMD: '{cmdline}'",
+                            level="critical",
+                            severity="critical",
+                            details=details,
+                            action="kill_process" # <-- Request an active response
                         )
-                        break
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+                        # Publish this event to the bus
+                        self.publish_threat_intel("SUSPICIOUS_PROCESS_DETECTED", data=details)
+                        continue # Move to next process after this critical alert
 
-        # Health check for SPECIFICALLY monitored processes
-        self._check_specific_processes()
+                    for pattern in self.suspicious_command_patterns:
+                        if pattern.search(cmdline):
+                            details = {"pid": proc.pid, "cmdline": cmdline, "name": proc.name(), "pattern": pattern.pattern}
+                            self.log_alert(
+                                "PROCESS",
+                                f"Suspicious command in new process. PID: {proc.pid}, "
+                                f"Name: {proc.name()}, CMD: '{cmdline}'"
+                            )
+                            # Publish this event to the bus
+                            self.publish_threat_intel("SUSPICIOUS_PROCESS_DETECTED", data=details)
+                            break
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
 
-        self.known_pids = current_pids
+            # Health check for SPECIFICALLY monitored processes
+            self._check_specific_processes()
+
+            self.known_pids = current_pids
+            
+            # Wait for the specified interval or until shutdown is signaled
+            self.shutdown_event.wait(self.interval)
 
     def _check_specific_processes(self):
         rules = self.monitor_config.get("processes", [])
