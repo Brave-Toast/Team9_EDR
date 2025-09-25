@@ -29,7 +29,9 @@
             "network_interface": "ens33",
             "syn_flood_threshold": 30,
             "time_window_seconds": 10,
-            "port_scan_threshold": 15
+            "port_scan_threshold": 15,
+            "udp_flood_threshold": 150,
+            "icmp_flood_threshold": 100
         },
         "juice_shop_monitoring": {
             "enabled": true,
@@ -43,6 +45,9 @@
             "log_path": "/var/log/auth.log",
             "fail_threshold": 5,
             "time_window_minutes": 5
+        },
+        "shell_history_monitoring": {
+            "enabled": true
         },
         "log_sources": [
             "/var/log/auth.log",

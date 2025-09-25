@@ -54,7 +54,11 @@ class FileMonitor(BaseMonitor):
         The file monitor's work is done in a background thread (Observer).
         This main thread will simply wait for the shutdown event to keep the process alive.
         """
-        self.shutdown_event.wait()
+        if not self.monitor_config.get("enabled") or not self.observer or not self.observer.emitters:
+            self.log_alert("LIFECYCLE", "File monitor is disabled or not configured to monitor any paths. Process will idle.", "info")
+            self.shutdown_event.wait()
+        else:
+            self.shutdown_event.wait() # Keep the process alive while the observer thread runs
 
 
 

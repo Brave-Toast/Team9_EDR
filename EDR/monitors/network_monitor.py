@@ -15,7 +15,7 @@ import psutil
 from monitors.base_monitor import BaseMonitor
 
 try:
-    from scapy.all import IP, TCP, sniff
+    from scapy.all import IP, TCP, UDP, ICMP, sniff
     from scapy.error import Scapy_Exception
 except ImportError:
     # scapy is not installed, we will raise an error in the run method
@@ -39,9 +39,13 @@ class NetworkMonitor(BaseMonitor):
         # SYN Flood and Port Scan detection attributes
         self.syn_flood_threshold = self.monitor_config.get("syn_flood_threshold", 30)
         self.port_scan_threshold = self.monitor_config.get("port_scan_threshold", 15)
+        self.udp_flood_threshold = self.monitor_config.get("udp_flood_threshold", 100)
+        self.icmp_flood_threshold = self.monitor_config.get("icmp_flood_threshold", 100)
         self.time_window = self.monitor_config.get("time_window_seconds", 10)
 
-        self.packet_counts = defaultdict(deque)
+        self.syn_packet_counts = defaultdict(deque)
+        self.udp_packet_counts = defaultdict(deque)
+        self.icmp_packet_counts = defaultdict(deque)
         self.port_scan_tracker = defaultdict(lambda: defaultdict(deque))
 
         self.blocked_ips = set()
@@ -74,24 +78,33 @@ class NetworkMonitor(BaseMonitor):
         if self._thread_shutdown_event.is_set():
             return
 
-        if IP in packet and TCP in packet:
+        if IP in packet:
             ip_layer = packet[IP]
-            tcp_layer = packet[TCP]
+            src_ip = ip_layer.src
+            current_time = time.time()
 
-            # We are only interested in SYN packets
-            if tcp_layer.flags == 'S':
-                src_ip = ip_layer.src
-                dst_port = tcp_layer.dport
-                current_time = time.time()
+            # TCP Packet Analysis (SYN Flood, Port Scan)
+            if TCP in packet:
+                tcp_layer = packet[TCP]
+                # We are only interested in SYN packets for these detections
+                if tcp_layer.flags == 'S':
+                    dst_port = tcp_layer.dport
+                    self.syn_packet_counts[src_ip].append(current_time)
+                    self.port_scan_tracker[src_ip][dst_port].append(current_time)
+                    self._packet_arrival_event.set()
 
-                # SYN Flood Detection
-                self.packet_counts[src_ip].append(current_time)
-
-                # Port Scan Detection
-                self.port_scan_tracker[src_ip][dst_port].append(current_time)
-                
-                # Signal the analysis thread to wake up and process
+            # UDP Flood Analysis
+            elif UDP in packet:
+                self.udp_packet_counts[src_ip].append(current_time)
                 self._packet_arrival_event.set()
+
+            # ICMP Flood Analysis
+            elif ICMP in packet:
+                icmp_layer = packet[ICMP]
+                # Type 8 is Echo Request (ping)
+                if icmp_layer.type == 8:
+                    self.icmp_packet_counts[src_ip].append(current_time)
+                    self._packet_arrival_event.set()
 
     def sniff_packets(self):
         """
@@ -100,7 +113,7 @@ class NetworkMonitor(BaseMonitor):
         self.log_alert("LIFECYCLE", "Packet sniffer thread started.", "info")
         try:
             # Sniff in short, non-blocking intervals to allow for graceful shutdown.
-            sniff_kwargs = {"prn": self._process_packet, "store": False, "filter": "tcp", "timeout": 1}
+            sniff_kwargs = {"prn": self._process_packet, "store": False, "filter": "ip", "timeout": 1}
             if self.network_interface:
                 sniff_kwargs["iface"] = self.network_interface
 
@@ -128,7 +141,7 @@ class NetworkMonitor(BaseMonitor):
                 current_time = time.time()
 
                 # --- SYN Flood Detection Logic ---
-                for ip, timestamps in list(self.packet_counts.items()):
+                for ip, timestamps in list(self.syn_packet_counts.items()):
                     # Slide the time window by removing old timestamps
                     while timestamps and current_time - timestamps[0] > self.time_window:
                         timestamps.popleft()
@@ -148,7 +161,49 @@ class NetworkMonitor(BaseMonitor):
                             )
                             self.blocked_ips.add(ip) # Track locally to prevent re-alerting
                         # Clear the deque regardless to stop counting for this window
-                        self.packet_counts[ip].clear()
+                        self.syn_packet_counts[ip].clear()
+
+                # --- UDP Flood Detection Logic ---
+                for ip, timestamps in list(self.udp_packet_counts.items()):
+                    while timestamps and current_time - timestamps[0] > self.time_window:
+                        timestamps.popleft()
+
+                    if len(timestamps) > self.udp_flood_threshold:
+                        if ip not in self.blocked_ips:
+                            self.log_alert(
+                                "DOS_ATTACK_DETECTED",
+                                f"Potential UDP flood attack detected from IP address: {ip}",
+                                severity="critical",
+                                details={
+                                    "remote_address": ip,
+                                    "udp_packet_count": len(timestamps),
+                                    "time_window_seconds": self.time_window
+                                },
+                                action="block_ip"
+                            )
+                            self.blocked_ips.add(ip)
+                        self.udp_packet_counts[ip].clear()
+
+                # --- ICMP Flood Detection Logic ---
+                for ip, timestamps in list(self.icmp_packet_counts.items()):
+                    while timestamps and current_time - timestamps[0] > self.time_window:
+                        timestamps.popleft()
+
+                    if len(timestamps) > self.icmp_flood_threshold:
+                        if ip not in self.blocked_ips:
+                            self.log_alert(
+                                "DOS_ATTACK_DETECTED",
+                                f"Potential ICMP (Ping) flood attack detected from IP address: {ip}",
+                                severity="critical",
+                                details={
+                                    "remote_address": ip,
+                                    "icmp_packet_count": len(timestamps),
+                                    "time_window_seconds": self.time_window
+                                },
+                                action="block_ip"
+                            )
+                            self.blocked_ips.add(ip)
+                        self.icmp_packet_counts[ip].clear()
 
                 # --- Port Scan Detection Logic ---
                 for ip, port_data in list(self.port_scan_tracker.items()):

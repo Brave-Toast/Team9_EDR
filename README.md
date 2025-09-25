@@ -45,6 +45,7 @@ The EDR comes with the following monitors:
 *   **Juice Shop Monitor:** Monitors the logs of an OWASP Juice Shop application for signs of web attacks and error spikes.
 *   **Network Monitor:** Actively sniffs network traffic using `scapy` to detect threats like SYN floods and port scans in real-time. It can also correlate network activity with threat intelligence from other monitors.
 *   **Process Monitor:** Monitors running processes for suspicious commands and can perform health checks on specifically monitored processes.
+*   **Shell History Monitor:** Monitors the shell history files of all users on the system for suspicious commands.
 *   **SSH Monitor:** Monitors the SSH authentication log for brute-force attacks.
 
 ## Configuration

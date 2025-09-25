@@ -17,8 +17,16 @@ class BaseMonitor:
         self.threat_bus = threat_bus
         self.monitor_queue = monitor_queue
         self.monitor_config = self.config.get("monitoring", {}).get(self.get_name(), {})
+        self._validate_config()
         self.interval = self.config.get("agent", {}).get("heartbeat_interval_seconds", 60)
         self.context = self._get_base_context()
+
+    def _validate_config(self):
+        """Validates the monitor-specific configuration."""
+        if not isinstance(self.monitor_config, dict):
+            raise ValueError(f"Configuration error: Monitor '{self.get_name()}' section is missing or not a dictionary.")
+        if not isinstance(self.monitor_config.get("enabled"), bool):
+            raise ValueError(f"Configuration error: Monitor '{self.get_name()}' is missing 'enabled' flag or it is not a boolean.")
 
     def _get_base_context(self) -> dict:
         """Gathers common contextual information for enriching alerts."""

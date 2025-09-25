@@ -183,6 +183,7 @@ class EDRAgent:
 
     def __init__(self, config):
         self.config = config
+        self._validate_config()
         self.logger = self._setup_logging()
         self.log_queue = Queue()
         self.shutdown_event = Event()
@@ -196,6 +197,28 @@ class EDRAgent:
             "kill_process": self._handle_kill_process,
             "block_ip": self._handle_block_ip,
         }
+
+    def _validate_config(self):
+        """Validates the main configuration file."""
+        if not isinstance(self.config.get("agent"), dict):
+            raise ValueError("Configuration error: 'agent' section is missing or not a dictionary.")
+        if not isinstance(self.config.get("monitoring"), dict):
+            raise ValueError("Configuration error: 'monitoring' section is missing or not a dictionary.")
+        if not isinstance(self.config.get("detection_rules"), dict):
+            raise ValueError("Configuration error: 'detection_rules' section is missing or not a dictionary.")
+        if not isinstance(self.config.get("output"), dict):
+            raise ValueError("Configuration error: 'output' section is missing or not a dictionary.")
+
+        agent_config = self.config["agent"]
+        if not isinstance(agent_config.get("id"), str) or not agent_config.get("id"):
+            raise ValueError("Configuration error: 'agent.id' is missing or not a non-empty string.")
+        if not isinstance(agent_config.get("log_level"), str):
+            raise ValueError("Configuration error: 'agent.log_level' is missing or not a string.")
+        if not isinstance(agent_config.get("heartbeat_interval_seconds"), int):
+            raise ValueError("Configuration error: 'agent.heartbeat_interval_seconds' is missing or not an integer.")
+
+        if not isinstance(self.config.get("platform"), str) or not self.config.get("platform"):
+            raise ValueError("Configuration error: 'platform' is missing or not a non-empty string.")
 
     def _setup_logging(self):
         """
