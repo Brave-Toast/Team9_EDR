@@ -359,6 +359,17 @@ class EDRAgent:
             self.logger.error("Invalid or missing 'remote_address' for block_ip action in alert: %s", alert)
             return
 
+        # Handle IPv6-mapped IPv4 addresses (e.g., ::ffff:192.168.1.1)
+        if ip.startswith("::ffff:"):
+            ip = ip.split("::ffff:")[-1]
+
+        # Track blocked IPs to avoid duplicate UFW commands
+        if not hasattr(self, 'blocked_ips'):
+            self.blocked_ips = set()
+        if ip in self.blocked_ips:
+            self.logger.info("IP %s is already blocked. Skipping duplicate UFW command.", ip)
+            return
+
         try:
             import ipaddress
             ipaddress.ip_address(ip)
@@ -369,9 +380,15 @@ class EDRAgent:
             return
 
         try:
-            cmd = ["sudo", "ufw", "insert", "1", "deny", "from", ip]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            # Remove any existing allow rule for this IP to ensure deny takes precedence
+            allow_cmd = ["sudo", "ufw", "delete", "allow", "from", ip, "to", "any", "port", "3000"]
+            subprocess.run(allow_cmd, capture_output=True, text=True)
+
+            # Use correct deny command (no insert)
+            deny_cmd = ["sudo", "ufw", "deny", "from", ip]
+            result = subprocess.run(deny_cmd, capture_output=True, text=True, check=True)
             self.logger.info("Successfully blocked IP %s. UFW output: %s", ip, result.stdout)
+            self.blocked_ips.add(ip)
         except FileNotFoundError:
             self.logger.error("Failed to block IP %s: 'ufw' command not found. Is UFW installed?", ip)
         except subprocess.CalledProcessError as e:

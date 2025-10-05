@@ -1,0 +1,24 @@
+Unban IP
+
+
+sudo nft -a list chain ip filter f2b-JUICE | \
+  awk '/192\.168\.52\.129/ {print $NF}' | \
+  xargs -r -I{} sudo nft delete rule ip filter f2b-JUICE handle {}
+
+
+sudo ufw delete deny from ::ffff:192.168.52.129 to any port 3000
+
+
+
+run loop for passwword
+for i in $(seq 1 7); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -H "Content-Type: application/json" \
+    -d '{"email":"noone@example.com","password":"wrongpw"}' \
+    http://192.168.52.130:3000/rest/user/login
+done
+
+
+
+sql injection username and password
+' or '1'='1' --
