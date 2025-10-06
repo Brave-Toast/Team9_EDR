@@ -1,3 +1,24 @@
+Reset UFW Firewall rules after IP is Blocked
+
+sudo ufw --force reset && sudo ufw enable && sudo ufw allow 3000/tcp
+
+
+
+
+For SQL Injection:
+Use the following line as the username and password on Juice Login Page
+' or '1'='1' --
+
+
+
+
+
+
+
+
+
+OLD COMMANDS:
+
 Unban IP
 
 
@@ -8,6 +29,9 @@ sudo nft -a list chain ip filter f2b-JUICE | \
 
 sudo ufw delete deny from ::ffff:192.168.52.129 to any port 3000
 
+
+
+sudo ufw --force reset && sudo ufw enable && sudo ufw allow 3000/tcp
 
 
 run loop for passwword
