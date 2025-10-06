@@ -9,7 +9,7 @@
         "file_integrity": {
             "enabled": true,
             "paths": [
-                "/home/james/juice-shop",
+                "/home/juice/juice-shop",
                 "/etc/passwd",
                 "/etc/shadow",
                 "/etc/sudoers"
@@ -20,7 +20,7 @@
             "processes": [
                 {
                     "name": "node",
-                    "command_line_contains": "/home/james/juice-shop/build/app.js"
+                    "command_line_contains": "/home/juice/juice-shop/build/app.js"
                 }
             ]
         },
@@ -33,7 +33,7 @@
         },
         "juice_shop_monitoring": {
             "enabled": true,
-            "log_directory": "/home/james/juice-shop/logs/",
+            "log_directory": "/home/juice/juice-shop/logs/",
             "log_pattern": "access.log*",
             "error_threshold": 10,
             "error_time_window_minutes": 1
@@ -47,7 +47,7 @@
         "log_sources": [
             "/var/log/auth.log",
             "/var/log/syslog",
-            "/home/james/.npm/_logs/",
+            "/home/juice/.npm/_logs/",
             "/var/log/apache2/access.log",
             "/var/log/apache2/error.log"
         ]
@@ -70,7 +70,7 @@
     },
     "output": {
         "type": "file",
-        "filepath": "/home/james/MyLogs/",
+        "filepath": "/home/juice/MyLogs/",
         "format": "human"
     }
 }
