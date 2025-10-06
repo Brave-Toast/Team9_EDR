@@ -128,13 +128,55 @@ class JuiceShopMonitor(BaseMonitor):
 
     def _analyze_line(self, line):
         """Analyzes a single log line for suspicious patterns and errors."""
-        # Check for web attack patterns
+        # Check for web attack patterns and block immediately
         for pattern in self.web_attack_patterns:
             if pattern.search(line):
                 self.log_alert(
                     "JUICE-SHOP-ATTACK",
                     f"Potential web attack detected. Pattern: '{pattern.pattern}'. Line: {line}"
                 )
+                
+                # Extract IP address for immediate blocking
+                ip_match = re.search(r'(?P<ip>(?:\:\:ffff\:)?\d+\.\d+\.\d+\.\d+)', line)
+                if ip_match:
+                    ip = ip_match.group("ip")
+                    # Normalize IP
+                    if ip.startswith("::ffff:"):
+                        ip = ip.split("::ffff:")[-1]
+                    
+                    # Block IP immediately on SQL injection detection
+                    if ip not in self.blocked_ips:
+                        alert = {
+                            "@timestamp": datetime.utcnow().isoformat() + "Z",
+                            "log": {"level": "info", "logger": "EDRAgent"},
+                            "message": f"Blocking IP {ip} due to SQL injection attack detected.",
+                            "ecs": {"version": "8.4"},
+                            "event": {
+                                "kind": "alert",
+                                "category": "security",
+                                "type": "sql-injection-blocked",
+                                "module": "juice_shop_monitoring",
+                                "severity": "high"
+                            },
+                            "action": "block_ip",
+                            "host": {"hostname": os.uname().nodename},
+                            "process": {"pid": os.getpid(), "name": "juice_shop_monitoring"},
+                            "user": {"name": os.getenv("USER", "root")},
+                            "details": {
+                                "remote_address": ip,
+                                "attack_type": "sql_injection",
+                                "pattern_detected": pattern.pattern
+                            },
+                            "custom": {
+                                "details": {
+                                    "remote_address": ip,
+                                    "attack_type": "sql_injection",
+                                    "pattern_detected": pattern.pattern
+                                }
+                            }
+                        }
+                        self.log_queue.put(alert)
+                        self.blocked_ips.add(ip)
                 break
 
         # Track errors for spike detection
