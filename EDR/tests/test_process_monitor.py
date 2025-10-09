@@ -6,9 +6,9 @@ from multiprocessing import Queue, Event
 # Add the project root to the Python path
 import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Add EDR directory to path
 
-from EDR.monitors.process_monitor import ProcessMonitor
+from monitors.process_monitor import ProcessMonitor
 
 class TestProcessMonitor(unittest.TestCase):
 
@@ -64,8 +64,8 @@ class TestProcessMonitor(unittest.TestCase):
         # Set initial known PIDs to an empty set
         self.monitor.known_pids = set()
 
-        # Run the monitor's check
-        self.monitor.run() # We need to call the run method to trigger the check
+        # Run the monitor's specific check method, not the whole run loop
+        self.monitor._check_new_processes()  # pylint: disable=protected-access
 
         # Check if an alert was logged
         try:

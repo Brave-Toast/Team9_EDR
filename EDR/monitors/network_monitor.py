@@ -39,7 +39,7 @@ class NetworkMonitor(BaseMonitor):
         # SYN Flood and Port Scan detection attributes
         self.syn_flood_threshold = self.monitor_config.get("syn_flood_threshold", 30)
         self.port_scan_threshold = self.monitor_config.get("port_scan_threshold", 15)
-        self.udp_flood_threshold = self.monitor_config.get("udp_flood_threshold", 100)
+        self.udp_flood_threshold = self.monitor_config.get("udp_flood_threshold", 150)
         self.icmp_flood_threshold = self.monitor_config.get("icmp_flood_threshold", 100)
         self.time_window = self.monitor_config.get("time_window_seconds", 10)
 
@@ -137,109 +137,118 @@ class NetworkMonitor(BaseMonitor):
             if not self._packet_arrival_event.wait(timeout=self.time_window):
                 continue # Woke up due to timeout, loop again
             self._packet_arrival_event.clear() # Reset the event
+
             try:
                 current_time = time.time()
-
-                # --- SYN Flood Detection Logic ---
-                for ip, timestamps in list(self.syn_packet_counts.items()):
-                    # Slide the time window by removing old timestamps
-                    while timestamps and current_time - timestamps[0] > self.time_window:
-                        timestamps.popleft()
-
-                    if len(timestamps) > self.syn_flood_threshold:
-                        if ip not in self.blocked_ips:
-                            self.log_alert(
-                                "DOS_ATTACK_DETECTED",
-                                f"Potential SYN flood attack detected from IP address: {ip}",
-                                severity="critical",
-                                details={
-                                    "remote_address": ip,
-                                    "syn_packet_count": len(timestamps),
-                                    "time_window_seconds": self.time_window
-                                },
-                                action="block_ip"
-                            )
-                            self.blocked_ips.add(ip) # Track locally to prevent re-alerting
-                        # Clear the deque regardless to stop counting for this window
-                        self.syn_packet_counts[ip].clear()
-
-                # --- UDP Flood Detection Logic ---
-                for ip, timestamps in list(self.udp_packet_counts.items()):
-                    while timestamps and current_time - timestamps[0] > self.time_window:
-                        timestamps.popleft()
-
-                    if len(timestamps) > self.udp_flood_threshold:
-                        if ip not in self.blocked_ips:
-                            self.log_alert(
-                                "DOS_ATTACK_DETECTED",
-                                f"Potential UDP flood attack detected from IP address: {ip}",
-                                severity="critical",
-                                details={
-                                    "remote_address": ip,
-                                    "udp_packet_count": len(timestamps),
-                                    "time_window_seconds": self.time_window
-                                },
-                                action="block_ip"
-                            )
-                            self.blocked_ips.add(ip)
-                        self.udp_packet_counts[ip].clear()
-
-                # --- ICMP Flood Detection Logic ---
-                for ip, timestamps in list(self.icmp_packet_counts.items()):
-                    while timestamps and current_time - timestamps[0] > self.time_window:
-                        timestamps.popleft()
-
-                    if len(timestamps) > self.icmp_flood_threshold:
-                        if ip not in self.blocked_ips:
-                            self.log_alert(
-                                "DOS_ATTACK_DETECTED",
-                                f"Potential ICMP (Ping) flood attack detected from IP address: {ip}",
-                                severity="critical",
-                                details={
-                                    "remote_address": ip,
-                                    "icmp_packet_count": len(timestamps),
-                                    "time_window_seconds": self.time_window
-                                },
-                                action="block_ip"
-                            )
-                            self.blocked_ips.add(ip)
-                        self.icmp_packet_counts[ip].clear()
-
-                # --- Port Scan Detection Logic ---
-                for ip, port_data in list(self.port_scan_tracker.items()):
-                    scanned_ports = set()
-                    # Iterate through ports scanned by this IP
-                    for port, timestamps in list(port_data.items()):
-                        while timestamps and current_time - timestamps[0] > self.time_window:
-                            timestamps.popleft()
-                        if timestamps:
-                            scanned_ports.add(port)
-                        else:
-                            # Clean up empty port entries
-                            del port_data[port]
-
-                    if len(scanned_ports) > self.port_scan_threshold:
-                        if ip not in self.blocked_ips:
-                            self.log_alert(
-                                "PORT_SCAN_DETECTED",
-                                f"Potential port scan detected from IP address: {ip}",
-                                severity="high",
-                                details={
-                                    "remote_address": ip,
-                                    "port_count": len(scanned_ports),
-                                    "time_window_seconds": self.time_window,
-                                    "scanned_ports": sorted(list(scanned_ports))
-                                },
-                                action="block_ip"
-                            )
-                            self.blocked_ips.add(ip) # Track locally to prevent re-alerting
-                            # Aggressively clear data for this IP to prevent re-alerting and allow re-detection
-                            del self.port_scan_tracker[ip]
-                            break # Move to the next IP address
-
+                self._analyze_syn_flood(current_time)
+                self._analyze_udp_flood(current_time)
+                self._analyze_icmp_flood(current_time)
+                self._analyze_port_scan(current_time)
             except Exception as e: # pylint: disable=broad-exception-caught
                 self.log_alert("CRITICAL", f"An unexpected error occurred during traffic analysis: {e}", "error")
                 time.sleep(1) # Sleep briefly on error
+
+    def _analyze_syn_flood(self, current_time: float):
+        """Analyzes collected SYN packets for flood attacks."""
+        # Iterate over a copy of keys to allow for modification during iteration
+        for ip in list(self.syn_packet_counts.keys()):
+            timestamps = self.syn_packet_counts[ip]
+            while timestamps and current_time - timestamps[0] > self.time_window:
+                timestamps.popleft()
+
+            if len(timestamps) >= self.syn_flood_threshold:
+                if ip not in self.blocked_ips:
+                    self.log_alert(
+                        "DOS_ATTACK_DETECTED",
+                        f"Potential SYN flood attack detected from IP address: {ip}",
+                        severity="critical",
+                        details={
+                            "remote_address": ip,
+                            "syn_packet_count": len(timestamps),
+                            "time_window_seconds": self.time_window
+                        },
+                        action="block_ip"
+                    )
+                    self.blocked_ips.add(ip)
+                self.syn_packet_counts[ip].clear() # De-indent to always clear after detection
+
+    def _analyze_udp_flood(self, current_time: float):
+        """Analyzes collected UDP packets for flood attacks."""
+        # Iterate over a copy of keys to allow for modification during iteration
+        for ip in list(self.udp_packet_counts.keys()):
+            timestamps = self.udp_packet_counts[ip]
+            while timestamps and current_time - timestamps[0] > self.time_window:
+                timestamps.popleft()
+
+            if len(timestamps) >= self.udp_flood_threshold:
+                if ip not in self.blocked_ips:
+                    self.log_alert(
+                        "DOS_ATTACK_DETECTED",
+                        f"Potential UDP flood attack detected from IP address: {ip}",
+                        severity="critical",
+                        details={
+                            "remote_address": ip,
+                            "udp_packet_count": len(timestamps),
+                            "time_window_seconds": self.time_window
+                        },
+                        action="block_ip"
+                    )
+                    self.blocked_ips.add(ip)
+                self.udp_packet_counts[ip].clear()
+
+    def _analyze_icmp_flood(self, current_time: float):
+        """Analyzes collected ICMP packets for flood attacks."""
+        # Iterate over a copy of keys to allow for modification during iteration
+        for ip in list(self.icmp_packet_counts.keys()):
+            timestamps = self.icmp_packet_counts[ip]
+            while timestamps and current_time - timestamps[0] > self.time_window:
+                timestamps.popleft()
+
+            if len(timestamps) >= self.icmp_flood_threshold:
+                if ip not in self.blocked_ips:
+                    self.log_alert(
+                        "DOS_ATTACK_DETECTED",
+                        f"Potential ICMP (Ping) flood attack detected from IP address: {ip}",
+                        severity="critical",
+                        details={
+                            "remote_address": ip,
+                            "icmp_packet_count": len(timestamps),
+                            "time_window_seconds": self.time_window
+                        },
+                        action="block_ip"
+                    )
+                    self.blocked_ips.add(ip)
+                self.icmp_packet_counts[ip].clear()
+
+    def _analyze_port_scan(self, current_time: float):
+        """Analyzes collected connection attempts for port scans."""
+        # Iterate over a copy of keys to allow for modification during iteration
+        for ip in list(self.port_scan_tracker.keys()):
+            port_data = self.port_scan_tracker[ip]
+            scanned_ports = set()
+            for port, timestamps in list(port_data.items()): # Inner loop is fine
+                while timestamps and current_time - timestamps[0] > self.time_window:
+                    timestamps.popleft()
+                if timestamps:
+                    scanned_ports.add(port)
+                else:
+                    del port_data[port]
+
+            if len(scanned_ports) >= self.port_scan_threshold:
+                if ip not in self.blocked_ips:
+                    self.log_alert(
+                        "PORT_SCAN_DETECTED",
+                        f"Potential port scan detected from IP address: {ip}",
+                        severity="high",
+                        details={
+                            "remote_address": ip,
+                            "port_count": len(scanned_ports),
+                            "time_window_seconds": self.time_window,
+                            "scanned_ports": sorted(list(scanned_ports))
+                        },
+                        action="block_ip"
+                    )
+                    self.blocked_ips.add(ip)
 
     def correlate_threats(self):
         """
@@ -282,7 +291,7 @@ class NetworkMonitor(BaseMonitor):
                             )
                             self.reported_conns.add(conn_id)
             except psutil.AccessDenied:
-                self.log_alert("ERROR", "Permission denied for network connection correlation.", "error")
+                self.log_alert("ERROR", "Permission-denied-for-network-connection-correlation.", "error")
                 break # Stop this thread if we don't have permissions
             except (psutil.Error, OSError, Exception) as e: # pylint: disable=broad-exception-caught
                 self.log_alert("ERROR", f"An error occurred during threat correlation: {e}", "error")
