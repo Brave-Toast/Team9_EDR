@@ -5,6 +5,7 @@ import queue
 import glob
 import os
 import re
+import socket
 from fnmatch import fnmatch
 from datetime import datetime, timedelta
 from watchdog.observers import Observer
@@ -159,7 +160,7 @@ class JuiceShopMonitor(BaseMonitor):
                                 "severity": "high"
                             },
                             "action": "block_ip",
-                            "host": {"hostname": os.uname().nodename},
+                            "host": {"hostname": socket.gethostname()},
                             "process": {"pid": os.getpid(), "name": "juice_shop_monitoring"},
                             "user": {"name": os.getenv("USER", "root")},
                             "details": {
@@ -210,7 +211,7 @@ class JuiceShopMonitor(BaseMonitor):
                         "severity": "high"
                     },
                     "action": "block_ip",
-                    "host": {"hostname": os.uname().nodename},
+                    "host": {"hostname": socket.gethostname()},
                     "process": {"pid": os.getpid(), "name": "juice_shop_monitoring"},
                     "user": {"name": os.getenv("USER", "root")},
                     "details": {

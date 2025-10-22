@@ -196,6 +196,7 @@ class EDRAgent:
             "kill_process": self._handle_kill_process,
             "block_ip": self._handle_block_ip,
         }
+        self.blocked_ips = set()
 
     def _setup_logging(self):
         """
@@ -358,8 +359,6 @@ class EDRAgent:
         if not ip or not isinstance(ip, str):
             self.logger.error("Invalid or missing 'remote_address' for block_ip action in alert: %s", alert)
             return
-
-        # Handle IPv6-mapped IPv4 addresses (e.g., ::ffff:192.168.1.1)
         if ip.startswith("::ffff:"):
             ip = ip.split("::ffff:")[-1]
 
@@ -382,7 +381,7 @@ class EDRAgent:
         try:
             # Remove any existing allow rule for this IP to ensure deny takes precedence
             allow_cmd = ["sudo", "ufw", "delete", "allow", "from", ip, "to", "any", "port", "3000"]
-            subprocess.run(allow_cmd, capture_output=True, text=True)
+            subprocess.run(allow_cmd, capture_output=True, text=True, check=False)
 
             # Insert deny rule at position 1 to give it highest priority
             deny_cmd = ["sudo", "ufw", "insert", "1", "deny", "from", ip]
