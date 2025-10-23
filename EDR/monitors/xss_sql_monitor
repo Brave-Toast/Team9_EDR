@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import re
+import sys
+import json
+import logging
+import html
+import time
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Tuple, Any
+from urllib.parse import unquote_plus
+
+from monitors.base_monitor import BaseMonitor
+from multiprocessing import Queue
+from multiprocessing.synchronize import Event
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+@dataclass
+class Finding:
+    vector: str  # e.g., "params.q" or "body"
+    type: str  # "sql_injection" or "xss"
+    score: int
+    matches: List[str]
+
+
+class XSSSQLMonitor(BaseMonitor):
+    """
+    Monitor that detects SQLi and XSS vectors in incoming request-like payloads.
+    Subclasses the project's BaseMonitor so alerts and threat publishing use the
+    agent's standardized channels.
+    """
+
+    def get_name(self) -> str:
+        # If you add a section for this monitor in config.json, ensure this name matches it.
+        return "xss_sql_monitoring"
+
+    def __init__(self, agent_config: dict, log_queue: Queue, shutdown_event: Event,
+                 threat_bus: Queue, monitor_queue: Queue):
+        super().__init__(agent_config, log_queue, shutdown_event, threat_bus, monitor_queue)
+
+        # Each tuple: (compiled_pattern, weight, label)
+        self.sql_patterns: List[Tuple[re.Pattern, int, str]] = [
+            (re.compile(r"(?i)\bUNION\b\s+\bSELECT\b"), 4, "union_select"),
+            (re.compile(r"(?i)\bSELECT\b.+\bFROM\b"), 2, "select_from"),
+            (re.compile(r"(?i)\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bDROP\b|\bALTER\b"), 3, "sql_dml_ddl"),
+            (re.compile(r"(--|#\s|/\*).*", re.I), 2, "sql_comment"),
+            (re.compile(r"(?i)\bOR\b\s+['\"]?\d+['\"]?\s*=\s*['\"]?\d+['\"]?"), 3, "tautology"),
+            (re.compile(r"(?i)\bOR\b\s+1=1\b"), 3, "or_1_eq_1"),
+            (re.compile(r"(?i)\bINFORMATION_SCHEMA\b"), 3, "info_schema"),
+            (re.compile(r"(?i)\bSLEEP\(\s*\d+\s*\)|BENCHMARK\(|WAITFOR\s+DELAY"), 3, "time_delay"),
+            (re.compile(r"(?i)\bEXEC(\s+|\()|xp_|\bsp_"), 3, "stored_procedure_exec"),
+            (re.compile(r"(?i)['\"].*;.*--"), 2, "semicolon_comment"),
+            (re.compile(r"[\"']\s*or\s*[\"']?1[\"']?\s*=\s*[\"']?1", re.I), 3, "or_1_equals_1_quotes"),
+        ]
+
+        self.xss_patterns: List[Tuple[re.Pattern, int, str]] = [
+            (re.compile(r"(?i)<\s*script\b"), 5, "script_tag"),
+            (re.compile(r"(?i)on\w+\s*="), 3, "inline_event_handler"),
+            (re.compile(r"(?i)<\s*img\b[^>]*\bonerror\b"), 4, "img_onerror"),
+            (re.compile(r"(?i)javascript\s*:"), 3, "javascript_scheme"),
+            (re.compile(r"(?i)<\s*iframe\b"), 3, "iframe_tag"),
+            (re.compile(r"(?i)<\s*svg\b"), 2, "svg_tag"),
+            (re.compile(r"(?i)document\.cookie|window\.location|alert\s*\("), 2, "suspicious_js_usage"),
+            (re.compile(r"(?i)<\s*meta\b[^>]*http-equiv\s*=\s*['\"]?refresh"), 2, "meta_refresh"),
+            (re.compile(r"(?i)<\s*body\b[^>]*onload\b"), 3, "body_onload"),
+            (re.compile(r"(?i)<\s*script\b[^>]*src\s*="), 2, "external_script"),
+        ]
+
+        # thresholds (tune for your environment)
+        self.sql_threshold = 4
+        self.xss_threshold = 3
+        self.max_matches = 10
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        # URL-decode and unescape HTML entities to increase detection robustness
+        try:
+            v = unquote_plus(value)
+        except Exception:
+            v = value
+        return html.unescape(v)
+
+    def _score_against_patterns(self, value: str, patterns: List[Tuple[re.Pattern, int, str]]) -> Tuple[int, List[str]]:
+        score = 0
+        matches_set: List[str] = []
+        if not value:
+            return score, []
+        normalized = self._normalize(value)
+        for pattern, weight, label in patterns:
+            for _ in pattern.finditer(normalized):
+                score += weight
+                if label not in matches_set:
+                    matches_set.append(label)
+                    if len(matches_set) >= self.max_matches:
+                        break
+            if len(matches_set) >= self.max_matches:
+                break
+        return score, matches_set
+
+    def detect_sql_injection(self, value: str) -> Tuple[int, List[str]]:
+        return self._score_against_patterns(value, self.sql_patterns)
+
+    def detect_xss(self, value: str) -> Tuple[int, List[str]]:
+        return self._score_against_patterns(value, self.xss_patterns)
+
+    def analyze_request(self, request: Dict[str, Any]) -> List[Finding]:
+        """
+        Analyze a request-like dict. Supported keys: headers (dict), params (dict), body (str), path (str).
+        Returns a list of Finding dataclass instances for suspicious vectors.
+        """
+        findings: List[Finding] = []
+        vectors: List[Tuple[str, str]] = []
+
+        path = request.get("path", "")
+        if path:
+            vectors.append(("path", str(path)))
+
+        params = request.get("params", {}) or {}
+        if isinstance(params, dict):
+            for k, v in params.items():
+                vectors.append((f"params.{k}", str(v)))
+        else:
+            vectors.append(("params", str(params)))
+
+        headers = request.get("headers", {}) or {}
+        if isinstance(headers, dict):
+            for k, v in headers.items():
+                vectors.append((f"headers.{k}", str(v)))
+        else:
+            vectors.append(("headers", str(headers)))
+
+        body = request.get("body", "")
+        if body:
+            vectors.append(("body", str(body)))
+
+        for vector_name, value in vectors:
+            sql_score, sql_matches = self.detect_sql_injection(value)
+            xss_score, xss_matches = self.detect_xss(value)
+
+            if sql_score >= self.sql_threshold:
+                findings.append(Finding(vector=vector_name, type="sql_injection", score=sql_score, matches=sql_matches))
+            if xss_score >= self.xss_threshold:
+                findings.append(Finding(vector=vector_name, type="xss", score=xss_score, matches=xss_matches))
+
+        return findings
+
+    def is_suspicious(self, request: Dict[str, Any]) -> bool:
+        return len(self.analyze_request(request)) > 0
+
+    # Integration points with the agent
+
+    def handle_threat_intel(self, message: dict):
+        # Example: log receipt of intel
+        self.log_alert("THREAT_INTEL", f"Received threat intel: {message}", level="info", severity="low")
+
+    def run(self):
+        """
+        When started as a monitor process by EDRAgent, this run loop will periodically
+        check for new intel and simply wait. This monitor is primarily a detection utility
+        (analyzer) and can also be used standalone via CLI/STDIN.
+        """
+        if not self.monitor_config.get("enabled", True):
+            return
+
+        # Simple periodic loop to stay alive and respond to bus messages
+        while not self.shutdown_event.is_set():
+            # Process any incoming bus messages
+            self._check_for_intel()
+            # Sleep for configured interval
+            self.shutdown_event.wait(self.interval)
+
+    # Keep a CLI-compatible mode for standalone usage (previous behavior)
+    @staticmethod
+    def cli_process_stdin():
+        monitor = XSSSQLMonitor({}, Queue(), None, Queue(), Queue())  # minimal placeholders
+        for raw in sys.stdin:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                req = json.loads(raw)
+            except Exception:
+                logging.error("Invalid JSON input: %s", raw)
+                continue
+            findings = monitor.analyze_request(req)
+            output = {
+                "path": req.get("path"),
+                "method": req.get("method"),
+                "suspicious": len(findings) > 0,
+                "findings": [asdict(f) for f in findings],
+            }
+            print(json.dumps(output))
+
+
+if __name__ == "__main__":
+    # Backwards-compatible standalone mode: read JSON requests from stdin and print findings
+    if len(sys.argv) > 1 and sys.argv[1] == "--example":
+        # simple example output for manual testing
+        inst = XSSSQLMonitor({}, Queue(), None, Queue(), Queue())
+        example_requests = [
+            {"method": "GET", "path": "/search", "params": {"q": "1' OR '1'='1"}, "headers": {"User-Agent": "curl"}},
+            {"method": "POST", "path": "/comment", "body": "<script>alert(document.cookie)</script>", "headers": {}},
+            {"method": "GET", "path": "/safe", "params": {"page": "about"}, "headers": {}},
+        ]
+        for req in example_requests:
+            findings = inst.analyze_request(req)
+            print(json.dumps({"request": {"path": req.get("path"), "params": req.get("params"), "body": req.get("body")}, "findings": [asdict(f) for f in findings]}))
+    else:
+        try:
+            XSSSQLMonitor.cli_process_stdin()
+        except Exception:
+            # If run under the agent, stdin mode won't be used; swallow exceptions here
+            pass
