@@ -32,10 +32,10 @@ class TestNetworkMonitor(unittest.TestCase):
 
     def setUp(self):
         """Set up a mock environment for each test."""
-        self.mock_log_queue = MagicMock(spec=Queue)
-        self.mock_threat_bus = MagicMock(spec=Queue)
-        self.mock_monitor_queue = MagicMock(spec=Queue)
-        self.mock_shutdown_event = MagicMock(spec=Event)
+        self.mock_log_queue = MagicMock()
+        self.mock_threat_bus = MagicMock()
+        self.mock_monitor_queue = MagicMock()
+        self.mock_shutdown_event = MagicMock()
 
         # Mock the config.json structure
         self.mock_config = {
@@ -104,6 +104,7 @@ class TestNetworkMonitor(unittest.TestCase):
         }[item]
 
         # --- Act ---
+        self.monitor._thread_shutdown_event.is_set.return_value = False
         with patch('time.time', MagicMock(return_value=100)):
             for _ in range(31):  # Exceed threshold of 30
                 self.monitor._process_packet(mock_packet)

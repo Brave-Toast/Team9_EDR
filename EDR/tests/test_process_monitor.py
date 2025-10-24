@@ -18,10 +18,10 @@ class TestProcessMonitor(unittest.TestCase):
 
     def setUp(self):
         """Set up a mock environment for each test."""
-        self.mock_log_queue = MagicMock(spec=Queue)
-        self.mock_threat_bus = MagicMock(spec=Queue)
-        self.mock_monitor_queue = MagicMock(spec=Queue)
-        self.mock_shutdown_event = MagicMock(spec=Event)
+        self.mock_log_queue = MagicMock()
+        self.mock_threat_bus = MagicMock()
+        self.mock_monitor_queue = MagicMock()
+        self.mock_shutdown_event = MagicMock()
 
         # Mock the config.json structure
         self.mock_config = {
@@ -65,10 +65,14 @@ class TestProcessMonitor(unittest.TestCase):
         """
         # --- Arrange ---
         # Mock psutil.pids() to show one existing PID, then a new suspicious one
-        mock_pids.side_effect = [
-            {100},  # First call (initializes known_pids)
-            {100, 200}  # Second call (detects 200 as new)
-        ]
+        # Provide a side effect function that is repeatable and won't
+        # raise StopIteration if psutil calls pids() multiple times.
+        call_count = {"n": 0}
+        def pids_side_effect(*_args, **_kwargs):
+            call_count["n"] += 1
+            return {100} if call_count["n"] == 1 else {100, 200}
+
+        mock_pids.side_effect = pids_side_effect
 
         # Mock psutil.Process(200) to look like a reverse shell
         mock_proc_obj = MagicMock()

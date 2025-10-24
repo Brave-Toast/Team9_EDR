@@ -85,13 +85,14 @@ class XSSSQLMonitor(BaseMonitor):
         delay_pattern = re.compile(r"(?i)(SLEEP|BENCHMARK|WAITFOR)")
         exec_pattern = re.compile(r"(?i)(EXEC|xp_|sp_)")
         semicolon_pattern = re.compile(r";.*?--")
-        or_quotes_pattern = re.compile(r"'\s*or\s*'1'='1")
+        or_quotes_pattern = re.compile(r"'\s*or\s*'1'='1'")
 
         self.sql_patterns = [
             (union_pattern, 4, "union_select"),
             (select_pattern, 2, "select_from"),
             (dml_pattern, 3, "sql_dml_ddl"),
             (comment_pattern, 2, "sql_comment"),
+            (re.compile(r"'(?:--|;)"), 2, "comment_after_quote"),
             (tautology_pattern, 3, "tautology"),
             (or_pattern, 3, "or_1_eq_1"),
             (schema_pattern, 3, "info_schema"),
@@ -115,9 +116,9 @@ class XSSSQLMonitor(BaseMonitor):
 
         self.xss_patterns = [
             (script_pattern, 5, "script_tag"),
-            (event_pattern, 3, "inline_event_handler"),
+            (event_pattern, 3, "event_handler"),
             (img_pattern, 4, "img_onerror"),
-            (js_pattern, 3, "javascript_scheme"),
+            (js_pattern, 3, "javascript_protocol"),
             (iframe_pattern, 3, "iframe_tag"),
             (svg_pattern, 2, "svg_tag"),
             (cookie_pattern, 2, "suspicious_js_usage"),
@@ -125,7 +126,7 @@ class XSSSQLMonitor(BaseMonitor):
             (body_pattern, 3, "body_onload"),
             (src_pattern, 2, "external_script")
         ]        # thresholds (tune for your environment)
-        self.sql_threshold = 4
+        self.sql_threshold = 3
         self.xss_threshold = 3
         self.max_matches = 10
 

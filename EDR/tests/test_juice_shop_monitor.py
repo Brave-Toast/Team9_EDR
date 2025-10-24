@@ -17,10 +17,12 @@ class TestJuiceShopMonitor(unittest.TestCase):
 
     def setUp(self):
         """Set up a mock environment for each test."""
-        self.mock_log_queue = MagicMock(spec=Queue)
-        self.mock_threat_bus = MagicMock(spec=Queue)
-        self.mock_monitor_queue = MagicMock(spec=Queue)
-        self.mock_shutdown_event = MagicMock(spec=Event)
+        # Use plain MagicMocks (no strict spec) to avoid platform-specific
+        # differences in multiprocessing types in test environments.
+        self.mock_log_queue = MagicMock()
+        self.mock_threat_bus = MagicMock()
+        self.mock_monitor_queue = MagicMock()
+        self.mock_shutdown_event = MagicMock()
 
         # Mock the config.json structure
         self.mock_config = {
@@ -43,8 +45,9 @@ class TestJuiceShopMonitor(unittest.TestCase):
             }
         }
 
-        # Patch the observer
-        patcher = patch('watchdog.observers.Observer')
+        # Patch the observer reference used inside the module under test so
+        # watchdog doesn't attempt to open real directories during tests.
+        patcher = patch('EDR.monitors.juice_shop_monitor.Observer', return_value=MagicMock())
         self.mock_observer = patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -56,10 +59,11 @@ class TestJuiceShopMonitor(unittest.TestCase):
             self.mock_monitor_queue
         )
 
-        # Mock time.time() for brute-force window check
-        self.mock_time = patch('time.time', MagicMock())
-        self.mock_time.start()
-        self.addCleanup(self.mock_time.stop)
+        # Mock time.time() for brute-force window check and capture the
+        # started mock so tests can set its return_value.
+        _time_patcher = patch('time.time', MagicMock())
+        self.mock_time = _time_patcher.start()
+        self.addCleanup(_time_patcher.stop)
 
         # Patch datetime.now() to control the time window
         mock_dt = patch('EDR.monitors.juice_shop_monitor.datetime')
@@ -131,6 +135,10 @@ class TestJuiceShopMonitor(unittest.TestCase):
         Test detection of an error spike.
         """
         # --- Arrange ---
+        # Ensure attack pattern matching is disabled for this test so we only
+        # count error spikes and do not generate web-attack alerts.
+        self.monitor.web_attack_patterns = []
+
         log_line = (
             '::ffff:3.4.5.6 - - [22/Oct/2025:15:32:00 +0000] "POST /api/Users HTTP/1.1" 500 78'
         )

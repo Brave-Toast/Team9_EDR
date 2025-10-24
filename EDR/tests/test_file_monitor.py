@@ -7,7 +7,6 @@ from multiprocessing import Queue, Event
 from EDR.monitors.file_monitor import FileMonitor, _FileChangeHandler
 
 
-@patch('watchdog.observers.Observer')
 class TestFileMonitor(unittest.TestCase):
     """
     Test suite for the FileMonitor class.
@@ -15,10 +14,11 @@ class TestFileMonitor(unittest.TestCase):
 
     def setUp(self):
         """Set up a mock environment for each test."""
-        self.mock_log_queue = MagicMock(spec=Queue)
-        self.mock_threat_bus = MagicMock(spec=Queue)
-        self.mock_monitor_queue = MagicMock(spec=Queue)
-        self.mock_shutdown_event = MagicMock(spec=Event)
+        # Use plain MagicMocks to ensure all expected attributes are available
+        self.mock_log_queue = MagicMock()
+        self.mock_threat_bus = MagicMock()
+        self.mock_monitor_queue = MagicMock()
+        self.mock_shutdown_event = MagicMock()
 
         # Mock the config.json structure
         self.mock_config = {
@@ -40,10 +40,12 @@ class TestFileMonitor(unittest.TestCase):
             }
         }
 
-        # Mock the observer instance returned by Observer()
+        # Mock the observer instance returned by Observer() (patch the
+        # reference used inside the module under test to avoid starting real
+        # watchdog observer threads during unit tests)
         self.mock_observer_instance = MagicMock()
         # pylint: disable=E1101
-        patch('watchdog.observers.Observer', return_value=self.mock_observer_instance).start()
+        patch('EDR.monitors.file_monitor.Observer', return_value=self.mock_observer_instance).start()
 
         self.monitor = FileMonitor(
             self.mock_config,
