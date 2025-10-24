@@ -1,18 +1,20 @@
 import unittest
-from unittest.mock import MagicMock, patch, Mock
+from unittest.mock import MagicMock, patch
 from multiprocessing import Queue, Event
-import re
 
 # Import the class to be tested
-from monitors.process_monitor import ProcessMonitor
+from EDR.monitors.process_monitor import ProcessMonitor
 
-# Use mock_psutil if available, otherwise create manual mocks
-try:
-    import mock_psutil
-except ImportError:
-    mock_psutil = None
+# Mock setup complete
 
 class TestProcessMonitor(unittest.TestCase):
+    """Test suite for the ProcessMonitor class.
+    
+    This test suite verifies the process monitor's ability to:
+    1. Detect suspicious processes (e.g., reverse shells)
+    2. Track health of configured processes
+    3. Respond to process-related threats
+    """
 
     def setUp(self):
         """Set up a mock environment for each test."""

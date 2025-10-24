@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from multiprocessing import Queue, Event
 
 # Import the class to be tested
-from monitors.juice_shop_monitor import JuiceShopMonitor
+from EDR.monitors.juice_shop_monitor import JuiceShopMonitor
 
 
 class TestJuiceShopMonitor(unittest.TestCase):
@@ -62,7 +62,7 @@ class TestJuiceShopMonitor(unittest.TestCase):
         self.addCleanup(self.mock_time.stop)
 
         # Patch datetime.now() to control the time window
-        mock_dt = patch('monitors.juice_shop_monitor.datetime')
+        mock_dt = patch('EDR.monitors.juice_shop_monitor.datetime')
         self.mock_datetime = mock_dt.start()
         self.addCleanup(mock_dt.stop)
 

@@ -2,7 +2,7 @@ import os
 import re
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from monitors.base_monitor import BaseMonitor
+from .base_monitor import BaseMonitor
 from multiprocessing import Queue
 from multiprocessing.synchronize import Event
 

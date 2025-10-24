@@ -1,12 +1,27 @@
+"""Unit tests for the SSHMonitor class.
+
+This module contains tests that verify the SSH monitor's ability to:
+1. Detect brute force attacks from auth.log
+2. Handle log file rotation
+3. Track and alert on failed login attempts
+"""
 import unittest
 from unittest.mock import MagicMock, patch, mock_open
 from multiprocessing import Queue, Event
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Import the class to be tested
-from monitors.ssh_monitor import SSHMonitor
+from EDR.monitors.ssh_monitor import SSHMonitor
 
 class TestSSHMonitor(unittest.TestCase):
+    """Test suite for the SSHMonitor class.
+    
+    Tests monitor functionality for:
+    - SSH brute force attack detection
+    - Log file rotation handling
+    - Failed login tracking
+    - Alert generation for security events
+    """
 
     def setUp(self):
         """Set up a mock environment for each test."""
@@ -81,10 +96,8 @@ class TestSSHMonitor(unittest.TestCase):
 
     @patch('os.stat')
     @patch('builtins.open', new_callable=mock_open)
-    def test_log_rotation(self, mock_file, mock_stat):
-        """
-        Test if the monitor correctly detects a log file rotation (inode change).
-        """
+    def test_log_rotation(self, _mock_file, mock_stat):
+        """Test if the monitor correctly detects a log file rotation (inode change)."""
         # --- Arrange ---
         # Simulate the inode changing on the second check
         mock_stat.side_effect = [

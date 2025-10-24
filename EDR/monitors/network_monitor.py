@@ -12,15 +12,26 @@ from multiprocessing import Queue
 from multiprocessing.synchronize import Event
 
 import psutil
-from monitors.base_monitor import BaseMonitor
+from .base_monitor import BaseMonitor
 
-try:
-    from scapy.all import IP, TCP, sniff
-    from scapy.error import Scapy_Exception
-except ImportError:
-    # scapy is not installed, we will raise an error in the run method
-    sniff = None
-    Scapy_Exception = None
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    # Help static type checkers and editors without importing scapy at runtime.
+    from scapy.all import IP, TCP, sniff  # type: ignore
+    from scapy.error import Scapy_Exception  # type: ignore
+else:
+    import importlib
+    try:
+        scapy_all = importlib.import_module("scapy.all")
+        IP = scapy_all.IP
+        TCP = scapy_all.TCP
+        sniff = scapy_all.sniff
+        scapy_error = importlib.import_module("scapy.error")
+        Scapy_Exception = getattr(scapy_error, "Scapy_Exception", Exception)
+    except (ImportError, ModuleNotFoundError) as e:
+        # scapy is not installed, we will raise an error in the run method
+        sniff = None
+        Scapy_Exception = None
 
 
 class NetworkMonitor(BaseMonitor):
@@ -45,6 +56,7 @@ class NetworkMonitor(BaseMonitor):
         self.port_scan_tracker = defaultdict(lambda: defaultdict(deque))
 
         self.blocked_ips = set()
+        self.blocking_enabled = self.monitor_config.get("enable_ip_blocking", True)
         
         # Use a thread-safe event for coordinating threads within this monitor
         self._thread_shutdown_event = threading.Event()
@@ -178,13 +190,21 @@ class NetworkMonitor(BaseMonitor):
                                 action="block_ip"
                             )
                             self.blocked_ips.add(ip) # Track locally to prevent re-alerting
+                            if self.blocking_enabled:
+                                self._block_ip(ip)
                             # Aggressively clear data for this IP to prevent re-alerting and allow re-detection
                             del self.port_scan_tracker[ip]
                             break # Move to the next IP address
 
-            except Exception as e: # pylint: disable=broad-exception-caught
-                self.log_alert("CRITICAL", f"An unexpected error occurred during traffic analysis: {e}", "error")
-                time.sleep(1) # Sleep briefly on error
+            except (KeyError, TypeError) as e:
+                self.log_alert("ERROR", f"Data structure error during traffic analysis: {e}", "error")
+                time.sleep(1)  # Sleep briefly on error
+            except RuntimeError as e:
+                self.log_alert("CRITICAL", f"Runtime error during traffic analysis: {e}", "error")
+                time.sleep(1)  # Sleep briefly on error
+            except ValueError as e:
+                self.log_alert("ERROR", f"Invalid value encountered during traffic analysis: {e}", "error")
+                time.sleep(1)  # Sleep briefly on error
 
     def correlate_threats(self):
         """
@@ -229,9 +249,15 @@ class NetworkMonitor(BaseMonitor):
             except psutil.AccessDenied:
                 self.log_alert("ERROR", "Permission denied for network connection correlation.", "error")
                 break # Stop this thread if we don't have permissions
-            except (psutil.Error, OSError, Exception) as e: # pylint: disable=broad-exception-caught
-                self.log_alert("ERROR", f"An error occurred during threat correlation: {e}", "error")
-                time.sleep(30) # Wait longer on error
+            except psutil.Error as e:
+                self.log_alert("ERROR", f"PSUtil error during threat correlation: {e}", "error")
+                time.sleep(30)  # Wait longer on error
+            except OSError as e:
+                self.log_alert("ERROR", f"OS error during threat correlation: {e}", "error")
+                time.sleep(30)  # Wait longer on error
+            except (ValueError, TypeError) as e:
+                self.log_alert("ERROR", f"Data handling error during threat correlation: {e}", "error")
+                time.sleep(30)  # Wait longer on error
 
     def run(self):
         """
@@ -253,6 +279,11 @@ class NetworkMonitor(BaseMonitor):
                 self.log_alert("ERROR", "Scapy is not installed. Network monitoring is disabled.", "error")
             return
         
+        # If no interface is specified, try to find the default one.
+        if not self.network_interface:
+            self.log_alert("LIFECYCLE", "No network_interface specified. Attempting to find default.", "info")
+            self.network_interface = self._get_default_interface()
+
         if self.network_interface:
             self.log_alert("LIFECYCLE", f"Sniffing explicitly on interface: {self.network_interface}", "info")
 
@@ -285,6 +316,93 @@ class NetworkMonitor(BaseMonitor):
         while not self._thread_shutdown_event.is_set():
             self._check_for_intel()
             time.sleep(1) # Check for new intel every second
+
+    def _block_ip(self, ip_address: str):
+        """
+        Blocks an IP address using the system's firewall.
+        """
+        try:
+            import platform
+            system = platform.system().lower()
+            
+            if system == "linux":
+                # Use UFW for Ubuntu/Debian systems
+                import subprocess
+                try:
+                    # First try UFW
+                    cmd = f"sudo ufw deny from {ip_address} to any"
+                    result = subprocess.run(cmd.split(), check=True, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        self.log_alert(
+                            "IP_BLOCKED",
+                            f"Successfully blocked IP address: {ip_address} using UFW",
+                            severity="info"
+                        )
+                    else:
+                        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+                except subprocess.CalledProcessError as e:
+                    self.log_alert(
+                        "ERROR",
+                        f"Failed to block IP {ip_address} using UFW: {str(e)}",
+                        severity="error",
+                        details={"stdout": e.stdout, "stderr": e.stderr if hasattr(e, 'stderr') else None}
+                    )
+            elif system == "windows":
+                # Use Windows Firewall
+                import subprocess
+                rule_name = f"EDR_Block_{ip_address.replace('.', '_')}"
+                cmd = (
+                    f'netsh advfirewall firewall add rule '
+                    f'name="{rule_name}" '
+                    f'dir=in action=block protocol=any '
+                    f'remoteip={ip_address}'
+                )
+                subprocess.run(cmd, check=True)
+                self.log_alert(
+                    "IP_BLOCKED",
+                    f"Successfully blocked IP address: {ip_address}",
+                    severity="info"
+                )
+            else:
+                self.log_alert(
+                    "ERROR",
+                    f"IP blocking not implemented for {system}",
+                    severity="error"
+                )
+        except subprocess.SubprocessError as e:
+            self.log_alert(
+                "ERROR",
+                f"Failed to execute firewall command for IP {ip_address}: {str(e)}",
+                severity="error"
+            )
+        except OSError as e:
+            self.log_alert(
+                "ERROR",
+                f"OS error while blocking IP {ip_address}: {str(e)}",
+                severity="error"
+            )
+        except (ValueError, TypeError) as e:
+            self.log_alert(
+                "ERROR",
+                f"Invalid IP address or parameter error while blocking {ip_address}: {str(e)}",
+                severity="error"
+            )
+
+    def _get_default_interface(self):
+        """Gets the default network interface."""
+        # Getting active network interfaces
+        stats = psutil.net_if_stats()
+        # Getting all network interfaces
+        addrs = psutil.net_if_addrs()
+        # Iterating over all interfaces
+        for intface in stats:
+            # Check if interface is up
+            if stats[intface].isup:
+                # Check if interface has a valid IP address
+                if intface in addrs and len(addrs[intface]) > 1 and addrs[intface][1].family == 2:
+                    # Return interface name
+                    return intface
+        return None
 
     def stop(self):
         """Signals all internal threads to shut down."""

@@ -3,6 +3,7 @@ import os
 import socket
 import psutil
 import queue
+import traceback
 from multiprocessing import Queue
 from multiprocessing.synchronize import Event
 
@@ -105,6 +106,46 @@ class BaseMonitor:
             else:
                 # If the monitor is not enabled, just wait for the shutdown event.
                 self.shutdown_event.wait()
+        except (OSError, IOError) as e:
+            # System and I/O related errors (file operations, network, etc.)
+            tb = traceback.format_exc()
+            self.log_alert(
+                "MONITOR_SYSTEM_ERROR",
+                f"System error in monitor '{self.get_name()}': {e}",
+                level="error",
+                severity="high",
+                details={"traceback": tb, "error_type": "system"},
+            )
+        except (ValueError, TypeError, AttributeError) as e:
+            # Data handling and programming errors
+            tb = traceback.format_exc()
+            self.log_alert(
+                "MONITOR_DATA_ERROR",
+                f"Data handling error in monitor '{self.get_name()}': {e}",
+                level="error",
+                severity="high",
+                details={"traceback": tb, "error_type": "data"},
+            )
+        except RuntimeError as e:
+            # Runtime-specific errors (threading, async operations, etc.)
+            tb = traceback.format_exc()
+            self.log_alert(
+                "MONITOR_RUNTIME_ERROR",
+                f"Runtime error in monitor '{self.get_name()}': {e}",
+                level="error",
+                severity="high",
+                details={"traceback": tb, "error_type": "runtime"},
+            )
+        except psutil.Error as e:
+            # PSUtil specific errors
+            tb = traceback.format_exc()
+            self.log_alert(
+                "MONITOR_PSUTIL_ERROR",
+                f"PSUtil error in monitor '{self.get_name()}': {e}",
+                level="error",
+                severity="high",
+                details={"traceback": tb, "error_type": "psutil"},
+            )
 
         except KeyboardInterrupt:
             # This allows the process to receive a Ctrl+C and shut down gracefully.

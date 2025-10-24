@@ -4,9 +4,7 @@ Unit tests for the FileMonitor class.
 import unittest
 from unittest.mock import MagicMock, patch, mock_open
 from multiprocessing import Queue, Event
-
-# Import the class to be tested
-from monitors.file_monitor import FileMonitor, _FileChangeHandler
+from EDR.monitors.file_monitor import FileMonitor, _FileChangeHandler
 
 
 @patch('watchdog.observers.Observer')

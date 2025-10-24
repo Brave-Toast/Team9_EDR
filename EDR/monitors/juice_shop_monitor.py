@@ -10,7 +10,7 @@ from fnmatch import fnmatch
 from datetime import datetime, timedelta
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from monitors.base_monitor import BaseMonitor
+from .base_monitor import BaseMonitor
 from multiprocessing import Queue
 from multiprocessing.synchronize import Event
 
@@ -58,9 +58,24 @@ class JuiceShopMonitor(BaseMonitor):
         self.log_alert("LIFECYCLE", f"Starting Juice Shop monitor for directory: {self.log_directory}", "info")
 
         # Start a watchdog observer to find new log files
+        # Make sure the directory exists before scheduling the observer. On
+        # some platforms watchdog will raise if the watched path does not
+        # exist which caused the monitor to crash with Errno 2.
+        if not os.path.isdir(self.log_directory):
+            self.log_alert(
+                "CONFIG",
+                f"Log directory not found, cannot start Juice Shop monitor: {self.log_directory}",
+                "error",
+            )
+            return
+
         event_handler = self._LogFileHandler(self)
-        self.observer.schedule(event_handler, self.log_directory, recursive=False)
-        self.observer.start()
+        try:
+            self.observer.schedule(event_handler, self.log_directory, recursive=False)
+            self.observer.start()
+        except (FileNotFoundError, OSError) as e:
+            self.log_alert("ERROR", f"Failed to start observer for {self.log_directory}: {e}", "error")
+            return
 
         # Initial scan for existing log files
         self._initial_scan()

@@ -1,6 +1,6 @@
 import psutil
 import re
-from monitors.base_monitor import BaseMonitor
+from .base_monitor import BaseMonitor
 from multiprocessing import Queue
 from multiprocessing.synchronize import Event
 
@@ -13,9 +13,21 @@ class ProcessMonitor(BaseMonitor):
         self.known_pids = set()
         self.monitored_procs = {} # Tracks PIDs of specifically monitored processes
         rules = self.config.get("detection_rules", {})
-        self.suspicious_command_patterns = [
-            re.compile(p) for p in rules.get("suspicious_commands", [])
+        user_patterns = rules.get("suspicious_commands", [])
+        # Provide a small set of sensible defaults for common reverse-shell
+        # and suspicious command invocations so the monitor works out of the
+        # box without extra config. Users can override via config.
+        default_patterns = [
+            r"\b(nc|ncat|netcat)\b",        # netcat variants
+            r"\b-n?e\b",                   # -e flag (exec)
+            r"\b(/bin/(?:sh|bash))\b",     # direct shell execution
+            r"bash\s+-i\b",                # interactive bash
+            r"python\s+-c\b",              # python one-liners
+            r"perl\s+-e\b",
+            r"php\s+-r\b",
         ]
+        patterns = user_patterns if user_patterns else default_patterns
+        self.suspicious_command_patterns = [re.compile(p, re.IGNORECASE) for p in patterns]
 
     def run(self):
         if not self.monitor_config.get("enabled"):
@@ -39,32 +51,53 @@ class ProcessMonitor(BaseMonitor):
                     if not cmdline:
                         continue
                     
-                    # Example of a CRITICAL alert with an ACTION
-                    if "ncat" in cmdline and "-e /bin/bash" in cmdline:
-                        details = {"pid": proc.pid, "cmdline": cmdline, "name": proc.name()}
-                        self.log_alert(
-                            "REVERSE-SHELL",
-                            f"Potential reverse shell detected! PID: {proc.pid}, CMD: '{cmdline}'",
-                            level="critical",
-                            severity="critical",
-                            details=details,
-                            action="kill_process" # <-- Request an active response
-                        )
-                        # Publish this event to the bus
-                        self.publish_threat_intel("SUSPICIOUS_PROCESS_DETECTED", data=details)
-                        continue # Move to next process after this critical alert
-
+                    # Detect reverse shells and suspicious one-liners using
+                    # configured or default regex patterns. We treat commands
+                    # matching netcat with an -e flag or interactive shells as
+                    # high priority (critical). Other one-liners are reported
+                    # as PROCESS-level alerts.
+                    matched_critical = False
                     for pattern in self.suspicious_command_patterns:
                         if pattern.search(cmdline):
                             details = {"pid": proc.pid, "cmdline": cmdline, "name": proc.name(), "pattern": pattern.pattern}
+                            # Heuristic: netcat/nc with -e or interactive bash are critical
+                            if re.search(r"\b(nc|ncat|netcat)\b", cmdline, re.IGNORECASE) and re.search(r"\b-e\b", cmdline):
+                                self.log_alert(
+                                    "REVERSE-SHELL",
+                                    f"Potential reverse shell detected! PID: {proc.pid}, CMD: '{cmdline}'",
+                                    level="critical",
+                                    severity="critical",
+                                    details=details,
+                                    action="kill_process"
+                                )
+                                self.publish_threat_intel("SUSPICIOUS_PROCESS_DETECTED", data=details)
+                                matched_critical = True
+                                break
+
+                            if re.search(r"bash\s+-i|/bin/(?:sh|bash)", cmdline, re.IGNORECASE):
+                                self.log_alert(
+                                    "REVERSE-SHELL",
+                                    f"Potential interactive shell in new process. PID: {proc.pid}, CMD: '{cmdline}'",
+                                    level="critical",
+                                    severity="critical",
+                                    details=details,
+                                    action="kill_process"
+                                )
+                                self.publish_threat_intel("SUSPICIOUS_PROCESS_DETECTED", data=details)
+                                matched_critical = True
+                                break
+
+                            # Otherwise, non-critical suspicious command
                             self.log_alert(
                                 "PROCESS",
-                                f"Suspicious command in new process. PID: {proc.pid}, "
-                                f"Name: {proc.name()}, CMD: '{cmdline}'"
+                                f"Suspicious command in new process. PID: {proc.pid}, Name: {proc.name()}, CMD: '{cmdline}'",
+                                details={"pattern": pattern.pattern}
                             )
-                            # Publish this event to the bus
                             self.publish_threat_intel("SUSPICIOUS_PROCESS_DETECTED", data=details)
                             break
+
+                    if matched_critical:
+                        continue
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 

@@ -21,7 +21,7 @@ mock_scapy_all.IP = "IP_CLASS"
 mock_scapy_all.TCP = "TCP_CLASS"
 
 # Import the class to be tested *after* mocking
-from monitors.network_monitor import NetworkMonitor  # pylint: disable=wrong-import-position
+from EDR.monitors.network_monitor import NetworkMonitor  # pylint: disable=wrong-import-position
 
 
 class TestNetworkMonitor(unittest.TestCase):
