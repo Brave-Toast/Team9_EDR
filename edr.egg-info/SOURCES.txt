@@ -1,0 +1,27 @@
+README.md
+pyproject.toml
+EDR/__init__.py
+EDR/edr_agent.py
+EDR/formatters.py
+EDR/threat_bus.py
+EDR/monitors/__init__.py
+EDR/monitors/base_monitor.py
+EDR/monitors/file_monitor.py
+EDR/monitors/juice_shop_monitor.py
+EDR/monitors/network_monitor.py
+EDR/monitors/process_monitor.py
+EDR/monitors/ssh_monitor.py
+EDR/monitors/xss_sql_monitor.py
+EDR/offensive scripts/brute_force_script.py
+EDR/offensive scripts/port_scanner.py
+EDR/offensive scripts/sql_injection.py
+EDR/tests/test_file_monitor.py
+EDR/tests/test_juice_shop_monitor.py
+EDR/tests/test_network_monitor.py
+EDR/tests/test_process_monitor.py
+EDR/tests/test_ssh_monitor.py
+edr.egg-info/PKG-INFO
+edr.egg-info/SOURCES.txt
+edr.egg-info/dependency_links.txt
+edr.egg-info/requires.txt
+edr.egg-info/top_level.txt

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edr"
+version = "0.0.1"
+dependencies = [
+    "psutil",
+    "watchdog",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

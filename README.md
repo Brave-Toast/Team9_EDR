@@ -2,66 +2,91 @@
 
 ## Overview
 
-This repository contains a modular, multi-process Endpoint Detection and Response (EDR) agent written in Python. The agent is designed to monitor various aspects of a system, detect suspicious activities, and provide a framework for responding to threats. It is highly extensible, allowing for the easy addition of new monitoring capabilities.
+This repository contains a modular, multi-process Endpoint Detection and Response (EDR) agent written in Python. The agent monitors system state, detects suspicious activity, and can perform configurable active responses. The codebase is intended as a prototype and educational tool; monitors are implemented as individual modules under `EDR/monitors` and run in separate processes.
 
-## Features
+## Quick summary (what's in this repo)
 
-*   **Modular Architecture:** The EDR is built with a modular architecture that allows for the easy addition and removal of monitoring components (monitors).
-*   **Multi-Process Design:** Each monitor runs in its own process, ensuring that the failure of one monitor does not affect the others. This also allows for better resource utilization on multi-core systems.
-*   **Centralized Logging:** All monitors send their logs to a central queue, which are then processed by the main agent. Logs are formatted as JSON for easy parsing and analysis.
-*   **Threat Intelligence Bus:** A central message bus allows monitors to share information and threat intelligence with each other.
-*   **Active Response:** The EDR can be configured to take active responses to certain threats, such as killing a process or blocking an IP address.
-*   **Configuration Driven:** The agent's behavior is controlled by a central `config.json` file. The configuration is loaded at startup.
+- `EDR/` - package containing the core agent (`edr_agent.py`), monitor base class and monitor implementations.
+- `EDR/monitors/` - monitor implementations (file, process, network, ssh, juice_shop, xss_sql, etc.).
+- `EDR/offensive scripts/` - small test scripts used to validate detections (Juice Shop helpers, brute force, SQLi, port scanner, etc.).
+- `tests/` - unit tests for monitors.
+- `requirements.txt` - pinned runtime dependencies used for development/testing.
+- `config.json` - example agent configuration used by the agent at startup.
 
-## How it works
+## Requirements
 
-The EDR agent consists of a central `EDRAgent` class and a set of monitor classes. The `EDRAgent` is responsible for loading and managing the monitors, processing logs, and dispatching active responses. Each monitor is a subclass of the `BaseMonitor` class and is responsible for monitoring a specific aspect of the system.
+- Python 3.8+ recommended.
+- Install runtime dependencies:
 
-### EDRAgent
+```powershell
+python -m pip install -r requirements.txt
+```
 
-The `EDRAgent` is the core of the EDR. It performs the following tasks:
+Notes:
+- Some monitors and scripts have optional dependencies:
+	- `scapy` (used by `network_monitor`) — required for packet sniffing; sniffing typically requires root/admin privileges.
+	- `requests` (used by offensive scripts and some monitors) — optional for the repository itself but required to run those example scripts.
+- If you only want to run the agent (not the offensive scripts), installing the main `requirements.txt` should be sufficient for most functionality.
 
-1.  **Loads Configuration:** The agent starts by loading the configuration from the `config.json` file.
-2.  **Sets up Logging:** It sets up a centralized logger that formats log records as JSON.
-3.  **Loads and Starts Monitors:** The agent dynamically discovers and loads all monitor classes from the `monitors` directory. Each monitor is started in its own process.
-4.  **Starts Threat Bus Dispatcher:** A dedicated process is started to manage the threat intelligence bus, which is a queue that allows monitors to communicate with each other.
-5.  **Processes Log Queue:** The agent continuously checks the log queue for new log records from the monitors.
-6.  **Dispatches Active Responses:** If a log record contains an `action` field, the agent will dispatch the corresponding active response.
+## Running the agent
 
-### BaseMonitor
+From the repository root you can start the agent module. Example (PowerShell):
 
-The `BaseMonitor` class is the base class for all monitors. It provides the following functionality:
+```powershell
+python -m EDR.edr_agent
+```
 
-*   **Configuration:** It loads the monitor-specific configuration from the `config.json` file.
-*   **Logging:** It provides a `log_alert` method for sending structured log records to the main agent.
-*   **Threat Intelligence:** It provides a `publish_threat_intel` method for publishing messages to the threat intelligence bus.
-*   **Lifecycle Methods:** It defines `start`, `stop`, and `run` methods that are called by the main agent.
+This will load `config.json`, start configured monitors (each in its own process), and begin processing the central log queue and threat bus.
 
-## Monitors
+Important:
+- `network_monitor` requires `scapy` and usually elevated privileges to sniff packets.
+- IP blocking uses `ufw` on Linux or `netsh` on Windows — ensure your environment supports these if you enable blocking.
 
-The EDR comes with the following monitors:
+## Monitors (current list)
 
-*   **File Monitor:** Monitors the file system for changes, such as file creation, deletion, and modification. It can also scan file content for suspicious patterns.
-*   **Juice Shop Monitor:** Monitors the logs of an OWASP Juice Shop application for signs of web attacks and error spikes.
-*   **Network Monitor:** Actively sniffs network traffic using `scapy` to detect threats like SYN floods and port scans in real-time. It can also correlate network activity with threat intelligence from other monitors.
-*   **Process Monitor:** Monitors running processes for suspicious commands and can perform health checks on specifically monitored processes.
-*   **SSH Monitor:** Monitors the SSH authentication log for brute-force attacks.
+The repository provides several monitors out of the box. Each monitor implements `get_name()` and `run()` (and optional `start()`/`stop()` hooks):
 
-## Configuration
+- File monitor (`file_monitor.py`) — watches files for changes and suspicious content.
+- Juice Shop monitor (`juice_shop_monitor.py`) — parses Juice Shop logs for web attack indicators.
+- Network monitor (`network_monitor.py`) — passive/active network analysis (requires `scapy`).
+- Process monitor (`process_monitor.py`) — watches running processes for suspicious behavior.
+- SSH monitor (`ssh_monitor.py`) — inspects SSH logs for brute-force activity.
+- XSS/SQL monitor (`xss_sql_monitor.py`) — looks for web attack patterns in logs.
 
-The EDR agent is configured using the `config.json` file. This file is divided into the following sections:
+Each monitor is configurable via the `monitoring` section of `config.json` (see the file for supported options).
 
-*   **agent:** General agent settings, such as the agent ID and log level.
-*   **platform:** The platform the agent is running on (e.g., "linux").
-*   **monitoring:** This section contains the configuration for each monitor. Each monitor has its own subsection, which must be named after the monitor's `get_name()` method.
-*   **detection_rules:** This section contains detection rules, such as suspicious command patterns and web attack patterns.
-*   **output:** Configures the logging output. Can be set to log to the console and/or a file, and the format can be set to human-readable or structured JSON (ECS).
+## Offensive / test scripts
 
-## Extending the EDR
+The `EDR/offensive scripts/` folder contains small scripts used for testing detection:
 
-To create a new monitor, you need to create a new Python file in the `monitors` directory and define a new class that inherits from `BaseMonitor`. The new class must implement the `get_name` and `run` methods.
+- `brute_force_script.py` — brute-force attempts against a Juice Shop login endpoint (not SSH).
+- `sql_injection.py` — attempts simple SQL injection payloads against Juice Shop login.
+- `port_scanner.py` — basic TCP port scanner used for testing port-scan detection.
 
-*   **`get_name()`:** This method should return a unique name for the monitor, which should match the key in the `config.json` "monitoring" section.
-*   **`run()`:** This method contains the main execution logic for the monitor. It is called **once** by the `BaseMonitor`'s `run_wrapper`. If the monitor needs to perform continuous polling, it must implement its own loop within this method (e.g., `while not self.shutdown_event.is_set(): ...`).
+These scripts are educational — run them only in test environments you control.
 
-Once you have created your new monitor, you can enable it and configure it in the `config.json` file. The EDR agent will automatically discover and load the new monitor when it starts.
+Note: the offensive scripts use `requests`. If your editor (Pylance) reports missing imports for `requests`, install it into the interpreter used by your editor or run `pip install requests` in the environment you use.
+
+## Tests
+
+Unit tests are located in `tests/`. Run them with pytest from the repository root:
+
+```powershell
+python -m pytest -q
+```
+
+## Development notes
+
+- The `BaseMonitor.run_wrapper()` method uses specific exception handlers to avoid overly broad exception catches and includes a traceback in structured alerts when a monitor crashes. If you add a new monitor, follow the same pattern for error handling.
+- When adding new monitors place them in `EDR/monitors/` and ensure `get_name()` returns the key used in `config.json`.
+- For optional native or environment-dependent features (packet sniffing, firewall changes), the code performs runtime availability checks and will log errors rather than crash if the dependency is missing.
+
+## Security / Legal
+
+The offensive scripts are included for testing and educational use only. Do not run them against systems you do not own or have explicit permission to test.
+
+## Contact / Contributing
+
+Open issues and PRs are welcome. Please include tests for new monitors and keep changes focused and minimal.
+
+---
