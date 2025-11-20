@@ -47,7 +47,7 @@ test_log_rotation (tests.test_ssh_monitor.TestSSHMonitor.test_log_rotation)
 Test if the monitor correctly detects a log file rotation (inode change). ... ok
 
 ----------------------------------------------------------------------
-Ran 15 tests in 0.028s
+Ran 15 tests in 0.030s
 
 OK
 
